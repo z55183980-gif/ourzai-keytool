@@ -32,7 +32,7 @@ jobs:
       # 一个平台挂了，另一个照常出包，便于定位问题
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.platform == 'macos' && '[{"os":"macos-15","label":"macos"}]' || inputs.platform == 'windows' && '[{"os":"windows-2022","label":"windows"}]' || '[{"os":"macos-15","label":"macos"},{"os":"windows-2022","label":"windows"}]') }}
+        include: ${{ fromJSON(inputs.platform == 'macos' && '[{"os":"macos-15-intel","label":"macos"}]' || inputs.platform == 'windows' && '[{"os":"windows-2022","label":"windows"}]' || '[{"os":"macos-15-intel","label":"macos"},{"os":"windows-2022","label":"windows"}]') }}
 
     steps:
       - uses: actions/checkout@v4
