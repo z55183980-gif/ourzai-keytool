@@ -7,11 +7,11 @@ pub fn codex_home() -> Result<PathBuf> {
     if let Ok(v) = std::env::var("CODEX_HOME") {
         let v = v.trim();
         if !v.is_empty() {
-            return Ok(PathBuf::from(v));
+            return Ok(std::path::absolute(v)?);
         }
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| AppError::CodexHomeMissing("无法确定用户主目录".into()))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| AppError::CodexHomeMissing("无法确定用户主目录".into()))?;
     Ok(home.join(".codex"))
 }
 
@@ -29,11 +29,10 @@ pub fn claude_home() -> Result<PathBuf> {
     if let Ok(v) = std::env::var("CLAUDE_CONFIG_DIR") {
         let v = v.trim();
         if !v.is_empty() {
-            return Ok(PathBuf::from(v));
+            return Ok(std::path::absolute(v)?);
         }
     }
-    let home = dirs::home_dir()
-        .ok_or_else(|| AppError::Other("无法确定用户主目录".into()))?;
+    let home = dirs::home_dir().ok_or_else(|| AppError::Other("无法确定用户主目录".into()))?;
     Ok(home.join(".claude"))
 }
 
@@ -48,8 +47,7 @@ pub fn backup_root() -> Result<PathBuf> {
 
 /// 本工具自己的状态目录（记住上次选的模型、备份索引）
 pub fn app_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| AppError::Other("无法确定用户主目录".into()))?;
+    let home = dirs::home_dir().ok_or_else(|| AppError::Other("无法确定用户主目录".into()))?;
     Ok(home.join(".dbkey"))
 }
 

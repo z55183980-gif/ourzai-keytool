@@ -34,8 +34,8 @@ enabled = true
 fn test_cfg() -> ProviderConfig {
     ProviderConfig {
         provider_id: "starnexus".into(),
-        display_name: "StarNexus".into(),
-        base_url: "https://api.dkby.com/v1".into(),
+        display_name: "zAI".into(),
+        base_url: "https://api.ourzai.com/v1".into(),
         wire_api: "responses".into(),
         model: "gpt-5.3-codex".into(),
         reasoning_effort: "medium".into(),
@@ -72,7 +72,7 @@ fn preserves_user_comments() {
 fn builtin_mode_writes_top_level_base_url() {
     let out = apply(REAL_WORLD, &test_cfg(), false).unwrap();
 
-    assert!(out.contains(r#"openai_base_url = "https://api.dkby.com/v1""#));
+    assert!(out.contains(r#"openai_base_url = "https://api.ourzai.com/v1""#));
     assert!(!out.contains("[model_providers.starnexus]"), "默认不该建自定义 provider 段");
     assert!(!out.contains("sk-test-123456"), "密钥绝不能出现在 config.toml 里");
     parse(&out).expect("产出必须能被重新解析");
@@ -119,7 +119,7 @@ fn bearer_mode_writes_provider_table() {
     let out = apply(REAL_WORLD, &cfg, false).unwrap();
 
     assert!(out.contains("[model_providers.starnexus]"));
-    assert!(out.contains(r#"base_url = "https://api.dkby.com/v1""#));
+    assert!(out.contains(r#"base_url = "https://api.ourzai.com/v1""#));
     assert!(out.contains(r#"wire_api = "responses""#));
     assert!(out.contains(r#"model_provider = "starnexus""#));
     parse(&out).expect("产出必须能被重新解析");
@@ -239,7 +239,7 @@ fn reads_current_pointing() {
     let configured = apply(REAL_WORLD, &test_cfg(), false).unwrap();
     assert_eq!(
         current_pointing(&configured).as_deref(),
-        Some("https://api.dkby.com/v1")
+        Some("https://api.ourzai.com/v1")
     );
 }
 

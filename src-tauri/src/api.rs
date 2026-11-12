@@ -25,29 +25,39 @@ pub struct RemoteConfig {
     pub notice: String,
     #[serde(default)]
     pub write_mode: String,
+    /// AI 诊断用的模型：默认网关上的 DeepSeek（走 Chat Completions）。
+    /// 这把密钥用不了时，先找任一 DeepSeek 模型，再退到 haiku / sonnet
+    #[serde(default)]
+    pub diagnose_model: String,
 }
 
 /// 拉不到远程配置时的兜底 —— 绝不能因为拉不到就罢工
 pub fn builtin_defaults() -> RemoteConfig {
     RemoteConfig {
-        base_url: "https://api.dkby.com/v1".into(),
+        base_url: crate::brand::MODEL_API.into(),
         wire_api: "responses".into(),
-        default_model: "gpt-5.6-sol".into(),
+        // Codex 只走 Responses 接口。gpt-5.6-sol 虽在 /models 列表里，但网关只在 Chat 接口上有渠道，
+        // Codex 用它会报 503「No endpoint serves model」；gpt-6-sol 在 Responses 接口上可用。
+        // 密钥没单独设置模型时，界面会再按网关目录挑一个这把密钥确实能用的（见 App.tsx 的 modelFor）
+        default_model: "gpt-6-sol".into(),
         // 不内置模型列表：点「获取」从 /v1/models 拿这个 Key 真正能用的，
         // 其余时候允许用户直接手填。避免预设过期或含用不了的模型。
         recommended_models: Vec::new(),
-        claude_default_model: "claude-opus-4-8".into(),
+        // 与网关当前提供的 Claude 模型一致（claude-opus-5-5 / claude-sonnet-5-5）；
+        // 网关上没有 haiku，haiku 别名（也是 Claude Code 后台杂事用的模型）指向 sonnet
+        claude_default_model: "claude-opus-5-5".into(),
         claude_recommended_models: Vec::new(),
-        claude_opus_model: "claude-opus-4-8".into(),
-        claude_sonnet_model: "claude-sonnet-4-6".into(),
-        claude_haiku_model: "claude-haiku-4-5-20251001".into(),
+        claude_opus_model: "claude-opus-5-5".into(),
+        claude_sonnet_model: "claude-sonnet-5-5".into(),
+        claude_haiku_model: "claude-sonnet-5-5".into(),
         min_client_version: String::new(),
         notice: String::new(),
         write_mode: "provider_table".into(),
+        diagnose_model: "deepseek-chat".into(),
     }
 }
 
-fn client(ignore_proxy: bool) -> Result<reqwest::Client> {
+pub(crate) fn client(ignore_proxy: bool) -> Result<reqwest::Client> {
     let mut b = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
@@ -62,7 +72,7 @@ fn client(ignore_proxy: bool) -> Result<reqwest::Client> {
 
 /// 把 HTTP 状态码翻成用户看得懂的话。
 /// 这是客服成本的大头 —— 用户看到"401"只会来问，看到下面这些话就能自己解决。
-fn explain(status: u16, body: &str) -> String {
+pub(crate) fn explain(status: u16, body: &str) -> String {
     let detail = body.chars().take(200).collect::<String>();
     match status {
         401 => "API Key 不对或者已经过期了，去官网重新复制一次".into(),
@@ -95,6 +105,55 @@ pub struct TestResult {
     pub ok: bool,
     pub message: String,
     pub models: Vec<String>,
+    /// HTTP 状态码，体检用来区分「密钥无效」和「服务暂时不可用」
+    #[serde(skip)]
+    pub status: u16,
+}
+
+/// 网关目录里的一个模型，以及它在哪些接口上有渠道（responses、messages、chat.completions……）。
+/// endpoints 为空表示不知道（网关没有目录接口时，只能从 /models 拿到名字）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub id: String,
+    pub endpoints: Vec<String>,
+}
+
+/// 读网关自己的模型目录 `/v1/zai/models`。比 OpenAI 标准的 /models 多了每个模型支持的接口：
+/// 同一个模型可能只在 Chat 接口上有渠道，Codex（Responses）或 Claude Code（Messages）用不了。
+/// GET 请求，不计费。网关没有这个接口或返回异常时给 None，调用方退回 /models。
+pub async fn list_catalog(base_url: &str, api_key: &str, ignore_proxy: bool) -> Result<Option<Vec<ModelInfo>>> {
+    let url = format!("{}/zai/models", base_url.trim_end_matches('/'));
+    let resp = client(ignore_proxy)?
+        .get(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| AppError::Network(explain_network(&e)))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    Ok(parse_catalog(&resp.text().await.unwrap_or_default()))
+}
+
+fn parse_catalog(body: &str) -> Option<Vec<ModelInfo>> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let rows = v.get("data")?.as_array()?;
+    let mut out: Vec<ModelInfo> = rows
+        .iter()
+        .filter_map(|r| {
+            Some(ModelInfo {
+                id: r.get("id")?.as_str()?.to_string(),
+                endpoints: r
+                    .get("endpoints")
+                    .and_then(|e| e.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Some(out)
 }
 
 /// 用用户的 key 拉模型列表：既验证了 key 有效，又拿到了真实可用的模型。
@@ -117,6 +176,7 @@ pub async fn list_models(base_url: &str, api_key: &str, ignore_proxy: bool) -> R
             ok: false,
             message: explain(status, &text),
             models: Vec::new(),
+            status,
         });
     }
 
@@ -137,6 +197,7 @@ pub async fn list_models(base_url: &str, api_key: &str, ignore_proxy: bool) -> R
         ok: true,
         message: format!("连上了，可以用 {} 个模型", models.len()),
         models,
+        status,
     })
 }
 
@@ -174,5 +235,27 @@ pub async fn fetch_remote_config(endpoint: &str, ignore_proxy: bool) -> RemoteCo
             cfg
         }
         _ => fallback,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_keeps_endpoints() {
+        let body = r#"{"object":"list","data":[
+            {"id":"gpt-6-sol","endpoints":["chat.completions","responses"],"platform":"openai"},
+            {"id":"gpt-5.6-sol","endpoints":["chat.completions"]},
+            {"id":"odd"}
+        ]}"#;
+        let list = parse_catalog(body).unwrap();
+        // 按名字排序：gpt-5.6-sol、gpt-6-sol、odd
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].id, "gpt-5.6-sol");
+        assert_eq!(list[0].endpoints, ["chat.completions"]);
+        assert_eq!(list[1].endpoints, ["chat.completions", "responses"]);
+        assert!(list[2].id == "odd" && list[2].endpoints.is_empty());
+        assert!(parse_catalog("not json").is_none());
     }
 }

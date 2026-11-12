@@ -56,10 +56,11 @@ body {
   gap: 10px;
 }
 
-/* 已从 2048px 官方源图裁出纯 S 标志，无需再用 CSS 裁切 */
+/* Reuse the developer console's wordmark without cropping. */
 .logo {
-  width: 32px;
+  width: 60px;
   height: 32px;
+  object-fit: contain;
   flex: none;
   display: block;
 }
@@ -238,9 +239,9 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
+  background: var(--glass-strong, rgba(255, 255, 255, .8));
+  color: var(--fg);
+  border-color: var(--glass-edge, rgba(255, 255, 255, .85));
   font-weight: 600;
 }
 
@@ -618,7 +619,7 @@ code {
 
 /* ——— 卡片细节优化 ——— */
 
-/* 供应商头像：StarNexus 用 logo，官方用对应厂商标志 */
+/* 供应商头像：zAI 用 logo，官方用对应厂商标志 */
 .avatar {
   flex: none;
   width: 28px;
@@ -722,109 +723,6 @@ code {
 .warn-text {
   color: var(--warn-fg);
   font-size: 12px;
-}
-
-/* ——— 模型选择器 ——— */
-.mp {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  /* 建立在按钮行之上的层叠上下文 */
-  z-index: 50;
-}
-
-.mp > input {
-  flex: 1;
-  min-width: 0;
-  padding-right: 30px;
-  background-image: none;
-}
-
-/* Chrome 会给带 list 属性的输入框画一个原生箭头，和我们自己的重复 */
-.mp > input::-webkit-calendar-picker-indicator {
-  display: none !important;
-}
-
-.mp-toggle {
-  position: absolute;
-  right: 1px;
-  top: 1px;
-  bottom: 1px;
-  width: 28px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  border: none;
-  border-radius: 0 6px 6px 0;
-  background: transparent;
-  color: var(--dim);
-  height: auto;
-}
-
-.mp-toggle:hover:not(:disabled) {
-  color: var(--fg);
-  background: rgba(127, 127, 127, 0.12);
-  border-color: transparent;
-}
-
-.mp-toggle[aria-expanded="true"] svg {
-  transform: rotate(180deg);
-}
-
-.mp-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  /* 要盖过同一张卡里后面的按钮行 */
-  z-index: 50;
-  max-height: 232px;
-  overflow-y: auto;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
-}
-
-.mp-item {
-  padding: 7px 9px;
-  border-radius: 6px;
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 12.5px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.mp-item:hover {
-  background: var(--panel);
-}
-
-.mp-item.on {
-  background: var(--info-bg);
-  color: var(--info-fg);
-  font-weight: 600;
-}
-
-/* 厂商分组标题：灰色小标，只做归类，不判断能不能用 */
-.mp-group + .mp-group {
-  margin-top: 2px;
-  border-top: 1px solid var(--border);
-  padding-top: 4px;
-}
-
-.mp-group-label {
-  padding: 5px 9px 3px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--dim);
-  letter-spacing: 0.02em;
-  position: sticky;
-  top: 0;
-  background: var(--bg);
 }
 
 /* ——— 取 Key 的两条路：分段切换 ——— */
@@ -1046,147 +944,4 @@ label.token.off {
   gap: 12px;
   padding: 14px;
   overflow-y: auto;
-}
-
-/* ——— 登录表单：数值直接取自官网源码的 Tailwind 类 ——— */
-/* features/auth/sign-in/index.tsx 与 components/user-auth-form.tsx */
-.login-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px; /* grid gap-4 */
-  padding: 4px 2px 2px;
-}
-
-/* text-2xl font-bold tracking-tight text-slate-950 */
-.login-title {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  color: #020617;
-  text-align: center;
-}
-
-/* text-sm text-slate-500 */
-.login-sub {
-  font-size: 14px;
-  color: #64748b;
-  text-align: center;
-  margin-top: -8px;
-}
-
-/* font-medium text-sky-500 hover:text-sky-600 */
-.linkish {
-  padding: 0;
-  height: auto;
-  border: none;
-  background: none;
-  color: #0ea5e9;
-  font-weight: 500;
-  font-size: inherit;
-}
-
-.linkish:hover:not(:disabled) {
-  color: #0284c7;
-  border-color: transparent;
-}
-
-.field > label .linkish {
-  font-size: 14px;
-}
-
-.field > label.label-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-/* h-11 rounded-xl border-0 bg-white/72 shadow-sm ring-1 ring-slate-200/60 px-4 */
-.login-form input {
-  height: 44px;
-  border-radius: 12px;
-  border: none;
-  padding: 0 16px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.05),
-    0 0 0 1px rgba(226, 232, 240, 0.6);
-  font-size: 14px;
-}
-
-/* placeholder:text-slate-400 */
-.login-form input::placeholder {
-  color: #94a3b8;
-}
-
-/* focus-visible:ring-sky-400/40 */
-.login-form input:focus {
-  outline: none;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.05),
-    0 0 0 3px rgba(56, 189, 248, 0.4);
-}
-
-.pw {
-  position: relative;
-  display: flex;
-}
-
-.pw > input {
-  flex: 1;
-  min-width: 0;
-  padding-right: 42px;
-}
-
-.pw-eye {
-  position: absolute;
-  right: 4px;
-  top: 4px;
-  bottom: 4px;
-  width: 34px;
-  padding: 0;
-  height: auto;
-  display: grid;
-  place-items: center;
-  border: none;
-  border-radius: 9px;
-  background: transparent;
-  color: #94a3b8;
-}
-
-.pw-eye:hover:not(:disabled) {
-  color: #475569;
-  background: rgba(148, 163, 184, 0.14);
-  border-color: transparent;
-}
-
-/* mt-2 h-11 w-full rounded-full gap-2
-   bg-gradient-to-r from-sky-400 to-blue-500
-   shadow-lg shadow-sky-500/25 */
-.login-submit {
-  margin-top: 8px;
-  height: 44px;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: none;
-  border-radius: 999px;
-  background: linear-gradient(to right, #38bdf8, #3b82f6);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 500;
-  box-shadow: 0 10px 15px -3px rgba(14, 165, 233, 0.25);
-}
-
-/* hover:from-sky-500 hover:to-blue-600 */
-.login-submit:hover:not(:disabled) {
-  background: linear-gradient(to right, #0ea5e9, #2563eb);
-  border-color: transparent;
-}
-
-.login-form .login-note {
-  text-align: center;
-  margin: -4px 0 0;
 }

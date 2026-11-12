@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "StarNexus API",
+  "productName": "密钥管理工具",
   "version": "0.1.0",
   "identifier": "com.starnexus.dbkey",
   "build": {
@@ -12,10 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "星域互联 API",
+        "title": "密钥管理工具",
         "width": 560,
-        "height": 720,
-        "minWidth": 480,
+        "height": 884,
+        "center": true,
+        "minWidth": 560,
         "minHeight": 560,
         "resizable": true,
         "theme": "Light"
@@ -38,11 +39,28 @@
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper"
+      },
+      "wix": {
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
+        "languages": ["SimpChinese", "TradChinese", "English"],
+        "displayLanguageSelector": false
       }
     },
     "macOS": {
       "minimumSystemVersion": "12.0"
     }
   },
-  "mainBinaryName": "starnexus-api"
+  "mainBinaryName": "starnexus-api",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "com.ourzai.launcher"
+        ]
+      }
+    }
+  }
 }

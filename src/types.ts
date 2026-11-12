@@ -3,7 +3,33 @@
 export type ConfigState = "missing" | "ok" | { broken: string };
 export type SettingsState = "missing" | "ok" | { broken: string };
 
-export type AuthState = "Missing" | "OfficialLogin" | "ApiKeyOnly" | "Unparsable";
+export type AuthState = "Missing" | "OfficialLogin" | "ApiKeyOnly" | "Unparsable" | "ExternalStore";
+
+export type ConfigurationStatus = "unconfigured" | "configured" | "official" | "custom" | "unknown" | "broken";
+
+export type ToolId = "claude" | "codex";
+export type LaunchMode = "desktop" | "cli";
+export type LaunchTarget = `${ToolId}-${LaunchMode}`;
+export interface LauncherPreferences {
+  projectDirectory: string;
+  recentDirectories: string[];
+  claudeMode: LaunchMode;
+  codexMode: LaunchMode;
+  claudeService: string;
+  codexService: string;
+  customPaths: Partial<Record<LaunchTarget, string>>;
+}
+export interface LauncherInstallation {
+  target: LaunchTarget;
+  installed: boolean;
+  path: string | null;
+  message: string;
+}
+export interface LauncherScan {
+  platform: string;
+  installations: LauncherInstallation[];
+}
+export interface LaunchRequest { target: LaunchTarget; directory: string }
 
 export interface Profile {
   id: string;
@@ -13,7 +39,21 @@ export interface Profile {
   codexModel: string;
   codexEffort: string;
   claudeModel: string;
+  /** 其他服务（不是 zAI）：自己填的地址。填了哪个，就能给哪个工具用 */
+  custom: boolean;
+  codexBaseUrl: string;
+  claudeBaseUrl: string;
 }
+
+/** 这把密钥能不能给某个工具用：zAI 密钥都能；其他服务要填了那个工具的地址 */
+export const supportsTool = (p: Profile, tool: "claude" | "codex") =>
+  !p.custom || !!(tool === "codex" ? p.codexBaseUrl : p.claudeBaseUrl);
+
+/** 列表、选择里显示的名字：zAI 密钥带「zAI ·」，其他服务直接用名字 */
+export const profileTitle = (p: Profile) => (p.custom ? p.name : `zAI · ${p.name}`);
+
+/** 登录后，本地密钥在控制台里的状态（只覆盖从当前账号导入过的密钥） */
+export interface KeyStatus { profileId: string; usable: boolean; missing: boolean; note: string }
 
 export interface GatewayToken {
   id: number;
@@ -38,6 +78,9 @@ export interface SaveProfileRequest {
   codexModel: string;
   codexEffort: string;
   claudeModel: string;
+  /** 其他服务的地址；都空就是 zAI 密钥 */
+  codexBaseUrl?: string;
+  claudeBaseUrl?: string;
 }
 
 export interface CodexEnv {
@@ -51,6 +94,10 @@ export interface CodexEnv {
   residue: string[];
   managedByUs: boolean;
   activeProfileId: string | null;
+  /** 配置指向本网关、带着一把 Key，但没保存在本工具 */
+  unsavedGatewayKey: boolean;
+  configurationStatus: ConfigurationStatus;
+  statusMessage: string;
 }
 
 export interface ClaudeEnv {
@@ -61,6 +108,10 @@ export interface ClaudeEnv {
   currentModel: string | null;
   managedByUs: boolean;
   activeProfileId: string | null;
+  /** 配置指向本网关、带着一把 Key，但没保存在本工具 */
+  unsavedGatewayKey: boolean;
+  configurationStatus: ConfigurationStatus;
+  statusMessage: string;
 }
 
 export interface Environment {
@@ -102,6 +153,10 @@ export interface AppState {
   ignoreProxy: boolean;
   cleanupResidue: boolean;
   lastConfiguredAt: string;
+  /** 旧版：一次同意读取两个工具 */
+  configReadConsent: boolean;
+  /** 用户同意读取配置的工具；没同意的工具不读它的配置文件 */
+  configReadTools: string[];
 }
 
 export interface ApplyRequest {
@@ -132,6 +187,20 @@ export interface ApplyResult {
   paths: string[];
   warnings: string[];
 }
+
+/** 体检（health_check）的问题行；fix 只会是已有的动作 */
+export type HealthFix = "rewrite" | "rebuild" | "keys" | "settings" | "model" | "none";
+export interface HealthIssue { id: string; level: "error" | "warn"; text: string; fix: HealthFix }
+export interface HealthRequest { tool: ToolId; service: string; model: string; baseUrl: string; ignoreProxy: boolean; opusModel: string; sonnetModel: string; haikuModel: string }
+/** AI 诊断：一次请求一张卡片；action 只是推荐已有的按钮 */
+export interface DiagnoseRequest extends HealthRequest { mode: LaunchMode; profileId: string; note: string; /** 界面语言，zAI 按它回答 */ lang: string }
+/** 把配置文件里正在用的 zAI 密钥收进密钥列表的结果 */
+export interface AdoptResult { id: string; name: string; existed: boolean }
+
+/** 网关目录里的模型和它支持的接口（responses / messages / chat.completions…）；endpoints 为空 = 未知 */
+export interface ModelInfo { id: string; endpoints: string[] }
+
+export interface Diagnosis { cause: string; steps: string[]; action: HealthFix }
 
 export function isBroken(s: ConfigState | SettingsState): s is { broken: string } {
   return typeof s === "object" && s !== null && "broken" in s;

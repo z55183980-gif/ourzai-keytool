@@ -12,6 +12,17 @@ import type {
   SaveProfileRequest,
   RemoteConfig,
   TestResult,
+  LauncherPreferences,
+  LauncherScan,
+  LaunchRequest,
+  HealthIssue,
+  HealthRequest,
+  DiagnoseRequest,
+  Diagnosis,
+  AdoptResult,
+  ToolId,
+  KeyStatus,
+  ModelInfo,
 } from "./types";
 
 // 每个分支都由 import.meta.env.DEV 直接守卫。
@@ -19,19 +30,40 @@ import type {
 const DEV = import.meta.env.DEV;
 const S = DEV ? mock.activeScenario() : null;
 
-export const scanEnvironment = (baseUrl?: string): Promise<Environment> =>
+export const loadLauncherPreferences = (): Promise<LauncherPreferences> => DEV && S
+  ? Promise.resolve({ projectDirectory: "C:\\Projects", recentDirectories: [], claudeMode: "cli", codexMode: "cli", claudeService: "current", codexService: "current", customPaths: {} })
+  : invoke("load_launcher_preferences");
+export const saveLauncherPreferences = (preferences: LauncherPreferences): Promise<void> => DEV && S
+  ? Promise.resolve() : invoke("save_launcher_preferences", { preferences });
+export const scanLaunchers = (): Promise<LauncherScan> => DEV && S
+  ? Promise.resolve({ platform: "windows", installations: (["claude-desktop", "claude-cli", "codex-desktop", "codex-cli"] as const).map(target => ({ target, installed: S !== "nocodex" || !target.startsWith("codex"), path: "C:\\Applications\\" + target + ".exe", message: "界面预览示例" })) })
+  : invoke("scan_launchers");
+export const validateLaunch = (req: LaunchRequest): Promise<void> => DEV && S ? Promise.resolve() : invoke("validate_launch", { req });
+export const launchClient = (req: LaunchRequest): Promise<{ message: string }> => DEV && S
+  ? Promise.resolve({ message: "预览模式：未启动真实程序" }) : invoke("launch_client", { req });
+
+/** 读取本机配置。tools：用户同意读取的工具，另一个返回「未读取」占位 */
+export const scanEnvironment = (baseUrl?: string, tools?: ToolId[]): Promise<Environment> =>
   DEV && S
-    ? Promise.resolve(mock.mockEnv(S))
-    : invoke<Environment>("scan_environment", { baseUrl: baseUrl ?? null });
+    ? Promise.resolve(mock.mockEnvFor(S, tools))
+    : invoke<Environment>("scan_environment", { baseUrl: baseUrl ?? null, tools: tools ?? null });
 
 export const loadAppState = (): Promise<AppState> =>
   DEV && S ? Promise.resolve(mock.mockState()) : invoke<AppState>("load_app_state");
+
+/** 界面语言告诉后端：同步窗口标题、托盘，并记住给下次启动用 */
+export const setUiLanguage = (lang: string): Promise<void> =>
+  DEV && S ? Promise.resolve() : invoke<void>("set_ui_language", { lang });
+
+/** 记下用户已同意读取某个工具的本机配置 */
+export const markConfigRead = (tool: ToolId): Promise<void> =>
+  DEV && S ? Promise.resolve(mock.mockMarkConfigRead(tool)) : invoke<void>("mark_config_read", { tool });
 
 export const listProfiles = (): Promise<Profile[]> =>
   DEV && S ? Promise.resolve(mock.mockProfiles(S)) : invoke<Profile[]>("list_profiles");
 
 export const saveProfile = (req: SaveProfileRequest): Promise<string> =>
-  DEV && S ? Promise.resolve(req.id || "p-new") : invoke<string>("save_profile", { req });
+  DEV && S ? Promise.resolve(mock.mockSaveProfile(S, req)) : invoke<string>("save_profile", { req });
 
 export const deleteProfile = (id: string): Promise<void> =>
   DEV && S ? Promise.resolve() : invoke<void>("delete_profile", { id });
@@ -51,32 +83,33 @@ export const testConnection = (
     : invoke<TestResult>("test_connection", { baseUrl, apiKey, ignoreProxy });
 
 /** 用已保存的 Key 测试，密钥不经过前端 */
-export const testProfileConnection = (
-  profileId: string,
-  baseUrl: string,
-  ignoreProxy: boolean,
-): Promise<TestResult> =>
-  DEV && S
-    ? Promise.resolve(mock.mockTest())
-    : invoke<TestResult>("test_profile_connection", { profileId, baseUrl, ignoreProxy });
+/** 这把密钥能用的模型和各自支持的接口（读网关目录，不计费） */
+export const listProfileModels = (profileId: string, baseUrl: string, ignoreProxy: boolean): Promise<ModelInfo[]> =>
+  DEV && S ? Promise.resolve(mock.mockCatalog()) : invoke<ModelInfo[]>("list_profile_models", { profileId, baseUrl, ignoreProxy });
 
-// ——— 登录取 Key。登录态只在后端内存里，前端只拿得到用户名和掩码 ———
+// ——— 登录取 Key。只走浏览器登录；登录态只在后端内存里，前端只拿得到用户名和掩码 ———
 
-export const gatewayLogin = (
-  baseUrl: string,
-  username: string,
-  password: string,
-  ignoreProxy: boolean,
-): Promise<string> =>
-  DEV && S
-    ? Promise.resolve(username || "demo")
-    : invoke<string>("gateway_login", { baseUrl, username, password, ignoreProxy });
+/** 服务端是否已开放桌面浏览器登录。没开放就只能手动粘贴 Key */
+export const gatewayBrowserLoginAvailable = (ignoreProxy: boolean): Promise<boolean> =>
+  DEV && S ? Promise.resolve(true) : invoke<boolean>("gateway_browser_login_available", { ignoreProxy });
+
+/** 发起浏览器登录，返回要在系统浏览器打开的地址。switchAccount：身份中心总是显示登录表单 */
+export const gatewayBrowserLoginStart = (switchAccount: boolean): Promise<string> =>
+  DEV && S ? Promise.resolve("https://account.ourzai.com/login") : invoke<string>("gateway_browser_login_start", { switchAccount });
+
+/** 浏览器登录回调带回的授权码换成会话 */
+export const gatewayBrowserLoginFinish = (code: string, state: string, ignoreProxy: boolean): Promise<string> =>
+  DEV && S ? Promise.resolve("demo") : invoke<string>("gateway_browser_login_finish", { code, state, ignoreProxy });
 
 export const gatewayLogout = (): Promise<void> =>
   DEV && S ? Promise.resolve() : invoke<void>("gateway_logout");
 
 export const gatewayCurrentUser = (): Promise<string | null> =>
   DEV && S ? Promise.resolve(null) : invoke<string | null>("gateway_current_user");
+
+/** 登录后同步：本地导入过的密钥在控制台里是否还可用 */
+export const gatewayKeyStatus = (): Promise<KeyStatus[]> =>
+  DEV && S ? Promise.resolve(mock.mockKeyStatus()) : invoke<KeyStatus[]>("gateway_key_status");
 
 export const gatewayListTokens = (): Promise<GatewayToken[]> =>
   DEV && S ? Promise.resolve(mock.mockTokens()) : invoke<GatewayToken[]>("gateway_list_tokens");
@@ -101,6 +134,20 @@ export const restoreBackup = (id: string): Promise<void> =>
 
 export const applyConfig = (req: ApplyRequest): Promise<ApplyResult> =>
   DEV && S ? Promise.resolve(mock.mockApply(req)) : invoke<ApplyResult>("apply_config", { req });
+
+export const healthCheck = (req: HealthRequest): Promise<HealthIssue[]> =>
+  DEV && S ? Promise.resolve(mock.mockHealth(S, req)) : invoke<HealthIssue[]>("health_check", { req });
+
+/** 会覆盖配置文件的环境变量里，已经设置了哪些（只有变量名） */
+export const envOverrides = (): Promise<string[]> =>
+  DEV && S ? Promise.resolve(mock.mockEnvOverrides(S)) : invoke<string[]>("env_overrides");
+
+/** 把配置文件里正在用、没保存在本工具的 zAI 密钥收进列表（后端读取并测试，密钥不经过前端） */
+export const adoptCurrentKey = (tool: ToolId, baseUrl: string, ignoreProxy: boolean): Promise<AdoptResult> =>
+  DEV && S ? mock.mockAdopt(S, tool) : invoke<AdoptResult>("adopt_current_key", { req: { tool, baseUrl, ignoreProxy } });
+
+export const aiDiagnose = (req: DiagnoseRequest): Promise<Diagnosis> =>
+  DEV && S ? mock.mockDiagnose(S, req) : invoke<Diagnosis>("ai_diagnose", { req });
 
 export const rebuildMinimalConfig = (req: ApplyRequest): Promise<ApplyResult> =>
   DEV && S

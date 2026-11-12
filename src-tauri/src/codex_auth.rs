@@ -12,6 +12,8 @@ pub enum AuthState {
     ApiKeyOnly,
     /// 存在但解析不了 —— 不碰
     Unparsable,
+    /// Authentication is stored outside auth.json; do not infer account state.
+    ExternalStore,
 }
 
 pub fn inspect(auth_text: Option<&str>) -> AuthState {
@@ -29,10 +31,7 @@ pub fn inspect(auth_text: Option<&str>) -> AuthState {
     };
 
     // tokens 存在，或 auth_mode 明确是 chatgpt —— 都算官方登录
-    let has_tokens = obj
-        .get("tokens")
-        .map(|t| !t.is_null())
-        .unwrap_or(false);
+    let has_tokens = obj.get("tokens").map(|t| !t.is_null()).unwrap_or(false);
     let chatgpt_mode = obj
         .get("auth_mode")
         .and_then(|m| m.as_str())
@@ -41,8 +40,19 @@ pub fn inspect(auth_text: Option<&str>) -> AuthState {
 
     if has_tokens || chatgpt_mode {
         AuthState::OfficialLogin
-    } else {
+    } else if obj.get("auth_mode").is_some_and(|mode| {
+        mode.as_str()
+            .is_none_or(|s| !s.eq_ignore_ascii_case("apikey"))
+    }) {
+        AuthState::Unparsable
+    } else if obj
+        .get("OPENAI_API_KEY")
+        .and_then(Value::as_str)
+        .is_some_and(|k| !k.trim().is_empty())
+    {
         AuthState::ApiKeyOnly
+    } else {
+        AuthState::Missing
     }
 }
 
@@ -69,7 +79,8 @@ pub fn merge_api_key(auth_text: Option<&str>, api_key: &str) -> Result<String> {
         obj.insert("auth_mode".to_string(), Value::String("apikey".into()));
     }
 
-    serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| AppError::JsonParse(e.to_string()))
+    serde_json::to_string_pretty(&Value::Object(obj))
+        .map_err(|e| AppError::JsonParse(e.to_string()))
 }
 
 /// 读出 auth.json 里的 key，用来判断当前生效的是哪一把
@@ -79,6 +90,19 @@ pub fn current_api_key(auth_text: Option<&str>) -> Option<String> {
         .get("OPENAI_API_KEY")?
         .as_str()
         .map(|s| s.to_string())
+}
+
+/// Explicitly authorized switch away from file-based ChatGPT authentication.
+pub fn replace_with_api_key(auth_text: Option<&str>, api_key: &str) -> Result<String> {
+    let merged = merge_api_key(auth_text, api_key)?;
+    let mut value: Value = serde_json::from_str(&merged)?;
+    let obj = value
+        .as_object_mut()
+        .expect("merge_api_key returns an object");
+    obj.remove("tokens");
+    obj.remove("last_refresh");
+    obj.insert("auth_mode".into(), Value::String("apikey".into()));
+    Ok(serde_json::to_string_pretty(&value)?)
 }
 
 /// 切回官方时，把我们写进去的第三方 key 清掉，其余键不动
@@ -134,5 +158,22 @@ mod tests {
 
         assert_eq!(inspect(None), AuthState::Missing);
         assert_eq!(inspect(Some("{not json")), AuthState::Unparsable);
+        assert_eq!(inspect(Some("{}")), AuthState::Missing);
+        assert_eq!(
+            inspect(Some(r#"{"OPENAI_API_KEY":" "}"#)),
+            AuthState::Missing
+        );
+    }
+
+    #[test]
+    fn explicit_api_switch_removes_official_tokens_but_preserves_other_metadata() {
+        let original = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"old"},"last_refresh":"yesterday","custom":42}"#;
+        let text = replace_with_api_key(Some(original), "new").unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["auth_mode"], "apikey");
+        assert_eq!(value["custom"], 42);
+        assert!(value.get("tokens").is_none());
+        assert!(value.get("last_refresh").is_none());
+        assert_eq!(inspect(Some(&text)), AuthState::ApiKeyOnly);
     }
 }

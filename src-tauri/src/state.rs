@@ -2,6 +2,9 @@ use crate::error::{AppError, Result};
 use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::Mutex;
+
+static STATE_LOCK: Mutex<()> = Mutex::new(());
 
 const KEYRING_SERVICE: &str = "com.starnexus.dbkey";
 /// 旧版只存一把 key 时用的条目名，用于一次性迁移
@@ -9,7 +12,7 @@ const LEGACY_KEYRING_USER: &str = "api_key";
 
 /// 一把密钥的配置。用户可能有多把 Key（主号/测试号、不同套餐），
 /// 每把各自记住自己的模型偏好 —— 因为不同套餐能用的模型本来就不一样。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
     pub id: String,
@@ -24,12 +27,60 @@ pub struct Profile {
     /// 有了它，登录导入时才能认出"这把已经导过"，从而变成更新而不是重复新建。
     #[serde(default)]
     pub gateway_token_id: Option<i64>,
+    #[serde(default)]
+    pub gateway_account: Option<String>,
+    /// 其他服务（不是 zAI）的地址。两个都空 = zAI 密钥，走 zAI 网关。
+    /// 填了哪个，这把密钥就能给哪个工具用：Codex 用 OpenAI 兼容地址（通常以 /v1 结尾），
+    /// Claude Code 用 Anthropic 兼容地址。
+    #[serde(default)]
+    pub codex_base_url: String,
+    #[serde(default)]
+    pub claude_base_url: String,
+}
+
+impl Profile {
+    /// 其他服务的密钥（自己填了地址），不是 zAI 的
+    pub fn is_custom(&self) -> bool {
+        !self.codex_base_url.trim().is_empty() || !self.claude_base_url.trim().is_empty()
+    }
+
+    /// 给 Codex 用的 OpenAI 兼容地址。zAI 密钥用网关地址；其他服务没填就是不支持 Codex（None）
+    pub fn openai_base(&self, gateway: &str) -> Option<String> {
+        let url = if self.is_custom() { self.codex_base_url.trim() } else { gateway.trim() };
+        (!url.is_empty()).then(|| url.trim_end_matches('/').to_string())
+    }
+
+    /// 给 Claude Code 用的 Anthropic 兼容地址。zAI 密钥由网关地址推出；其他服务没填就是不支持 Claude（None）
+    pub fn anthropic_base(&self, gateway: &str) -> Option<String> {
+        if self.is_custom() {
+            let url = self.claude_base_url.trim();
+            return (!url.is_empty()).then(|| url.trim_end_matches('/').to_string());
+        }
+        Some(crate::claude_config::derive_anthropic_base_url(gateway))
+    }
+}
+
+/// 按 id 找一把密钥的配置（不含 Key 本身）
+pub fn find_profile(id: &str) -> Result<Option<Profile>> {
+    Ok(load()?.profiles.into_iter().find(|p| p.id == id))
+}
+
+/// 其他服务填过的地址（Codex 的、Claude 的）。检测配置时，指向这些地址的也算「可能是本工具写的」，
+/// 再按密钥核对是哪一把。
+pub fn custom_base_urls() -> Result<(Vec<String>, Vec<String>)> {
+    let profiles = load()?.profiles;
+    let pick = |f: fn(&Profile) -> &String| -> Vec<String> {
+        profiles.iter().map(f).map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty()).collect()
+    };
+    Ok((pick(|p| &p.codex_base_url), pick(|p| &p.claude_base_url)))
 }
 
 /// 本工具自己的状态。注意：API Key 不在这里 —— 每把 key 各自进系统密钥库。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
+    #[serde(default)]
+    pub legacy_migrated: bool,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -38,20 +89,28 @@ pub struct AppState {
     pub cleanup_residue: bool,
     #[serde(default)]
     pub last_configured_at: String,
+    /// 旧版的「同意读取」：一次同意两个工具。新版按工具记在 config_read_tools，这个只为兼容读取
+    #[serde(default)]
+    pub config_read_consent: bool,
+    /// 用户同意读取配置的工具（claude / codex）。没同意的工具不扫描它的配置文件
+    #[serde(default)]
+    pub config_read_tools: Vec<String>,
+    /// 界面语言（zh-CN / zh-HK / en）；空 = 跟随系统
+    #[serde(default)]
+    pub ui_lang: String,
 }
 
-pub fn load() -> AppState {
-    let Ok(p) = paths::state_path() else {
-        return AppState::default();
-    };
-    let mut st: AppState = fs::read_to_string(p)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
+pub fn load() -> Result<AppState> {
+    let _guard = STATE_LOCK
+        .lock()
+        .map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
+    load_inner()
+}
 
-    // 从旧版本升上来：把那唯一一把 key 变成第一条，用户无感
-    if st.profiles.is_empty() {
-        if let Some(legacy) = load_legacy_key() {
+fn load_inner() -> Result<AppState> {
+    let mut st = read_state(&paths::state_path()?)?;
+    if st.profiles.is_empty() && !st.legacy_migrated {
+        if let Some(legacy) = read_credential(LEGACY_KEYRING_USER)? {
             let p = Profile {
                 id: new_id(),
                 name: "我的密钥".into(),
@@ -59,75 +118,125 @@ pub fn load() -> AppState {
                 codex_effort: String::new(),
                 claude_model: String::new(),
                 gateway_token_id: None,
+                gateway_account: None,
+                ..Default::default()
             };
-            save_profile_key(&p.id, &legacy);
-            clear_legacy_key();
-            st.profiles.push(p);
-            let _ = save(&st);
+            st.profiles.push(p.clone());
+            st.legacy_migrated = true;
+            change_key_and_save(&SystemKeys, &p.id, Some(&legacy), || save(&st))?;
+            // Never remove the only legacy copy before both new stores are durable.
+            delete_credential(LEGACY_KEYRING_USER)?;
         }
     }
-    st
+    Ok(st)
+}
+
+fn read_state(path: &std::path::Path) -> Result<AppState> {
+    match crate::atomic::read_text_optional(path)? {
+        None => Ok(AppState::default()),
+        Some(text) => serde_json::from_str(&text).map_err(|_| {
+            AppError::Other("本地密钥列表文件损坏，已停止修改；请先恢复 state.json".into())
+        }),
+    }
 }
 
 pub fn save(s: &AppState) -> Result<()> {
     let dir = paths::app_dir()?;
     fs::create_dir_all(&dir)?;
-    let text = serde_json::to_string_pretty(s)?;
-    crate::atomic::write_atomic(&paths::state_path()?, &text)
+    crate::atomic::write_atomic(&paths::state_path()?, &serde_json::to_string_pretty(s)?)
 }
 
-/// 条目 id。用时间戳加进程号，够用且不引入额外依赖。
+pub fn update(f: impl FnOnce(&mut AppState)) -> Result<()> {
+    let _guard = STATE_LOCK
+        .lock()
+        .map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
+    let mut st = load_inner()?;
+    f(&mut st);
+    save(&st)
+}
+
 pub fn new_id() -> String {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("p{:x}{:x}", ms, std::process::id())
+    format!("p{}", crate::atomic::unique_id())
 }
 
 fn keyring_user(profile_id: &str) -> String {
     format!("profile-{}", profile_id)
 }
 
-/// 每把 Key 各存一条系统密钥库记录（Windows DPAPI / macOS Keychain），
-/// 绝不明文落盘。密钥库不可用时静默跳过 —— 记不住只是不方便，不该让工具用不了。
-pub fn save_profile_key(profile_id: &str, key: &str) {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(profile_id)) {
-        let _ = e.set_password(key);
+fn read_credential(user: &str) -> Result<Option<String>> {
+    match keyring::Entry::new(KEYRING_SERVICE, user)?.get_password() {
+        Ok(k) => Ok(Some(k).filter(|k| !k.trim().is_empty())),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }
 
-pub fn load_profile_key(profile_id: &str) -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, &keyring_user(profile_id))
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|k| !k.trim().is_empty())
-}
-
-pub fn delete_profile_key(profile_id: &str) {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(profile_id)) {
-        let _ = e.delete_credential();
+fn delete_credential(user: &str) -> Result<()> {
+    match keyring::Entry::new(KEYRING_SERVICE, user)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 
-fn load_legacy_key() -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, LEGACY_KEYRING_USER)
-        .ok()
-        .and_then(|e| e.get_password().ok())
-        .filter(|k| !k.trim().is_empty())
+/// Full keys stay in the backend. Missing credentials and unavailable storage differ.
+pub fn load_profile_key(profile_id: &str) -> Result<Option<String>> {
+    read_credential(&keyring_user(profile_id))
 }
 
-fn clear_legacy_key() {
-    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, LEGACY_KEYRING_USER) {
-        let _ = e.delete_credential();
+trait KeyStore {
+    fn get(&self, id: &str) -> Result<Option<String>>;
+    fn set(&self, id: &str, key: Option<&str>) -> Result<()>;
+}
+struct SystemKeys;
+impl KeyStore for SystemKeys {
+    fn get(&self, id: &str) -> Result<Option<String>> {
+        load_profile_key(id)
     }
+    fn set(&self, id: &str, key: Option<&str>) -> Result<()> {
+        match key {
+            Some(k) => keyring::Entry::new(KEYRING_SERVICE, &keyring_user(id))?
+                .set_password(k)
+                .map_err(Into::into),
+            None => delete_credential(&keyring_user(id)),
+        }
+    }
+}
+
+/// Compensate a credential change if its metadata cannot be saved. Never report
+/// success when the keyring write or read-back verification failed.
+fn change_key_and_save(
+    store: &impl KeyStore,
+    id: &str,
+    next: Option<&str>,
+    save: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let previous = store.get(id)?;
+    let result = (|| {
+        store.set(id, next)?;
+        if store.get(id)?.as_deref() != next {
+            return Err(AppError::Keyring("密钥保存后校验失败".into()));
+        }
+        save()
+    })();
+    if let Err(error) = result {
+        if store.set(id, previous.as_deref()).is_err()
+            || store.get(id).map(|v| v != previous).unwrap_or(true)
+        {
+            return Err(AppError::Keyring(format!(
+                "{}；原密钥恢复失败，请重新导入该密钥",
+                error
+            )));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// 取一个没被占用的默认名。
 /// 不能用「个数+1」：删掉中间某个后再新建会和现存的重名。
 pub fn next_default_name(profiles: &[Profile]) -> String {
     for n in 1.. {
-        let candidate = format!("密钥 {}", n);
+        let candidate = format!("{} {}", crate::ui_lang::pick("密钥", "密鑰", "Key"), n);
         if !profiles.iter().any(|p| p.name == candidate) {
             return candidate;
         }
@@ -137,11 +246,16 @@ pub fn next_default_name(profiles: &[Profile]) -> String {
 
 /// 新增或更新一条。key 传 None 表示不改动已存的 key。
 pub fn upsert_profile(mut p: Profile, key: Option<&str>) -> Result<Profile> {
-    let mut st = load();
+    let _guard = STATE_LOCK
+        .lock()
+        .map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
+    let mut st = load_inner()?;
 
     let is_new = p.id.trim().is_empty();
     if is_new {
         p.id = new_id();
+    } else if !st.profiles.iter().any(|old| old.id == p.id) {
+        return Err(AppError::Other("找不到这把密钥，请刷新后重试".into()));
     }
 
     if p.name.trim().is_empty() {
@@ -158,18 +272,12 @@ pub fn upsert_profile(mut p: Profile, key: Option<&str>) -> Result<Profile> {
         };
     }
 
-    if let Some(k) = key {
-        let k = k.trim();
-        if !k.is_empty() {
-            save_profile_key(&p.id, k);
-        }
-    }
-
     // 手动改过 Key 就不再算作来自某个网关令牌，避免之后误判成"已关联"
     if p.gateway_token_id.is_none() {
         if let Some(old) = st.profiles.iter().find(|x| x.id == p.id) {
             if key.is_none() {
                 p.gateway_token_id = old.gateway_token_id;
+                p.gateway_account = old.gateway_account.clone();
             }
         }
     }
@@ -178,46 +286,147 @@ pub fn upsert_profile(mut p: Profile, key: Option<&str>) -> Result<Profile> {
         Some(existing) => *existing = p.clone(),
         None => st.profiles.push(p.clone()),
     }
-    save(&st)?;
+    match key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(k) => change_key_and_save(&SystemKeys, &p.id, Some(k), || save(&st))?,
+        None => save(&st)?,
+    }
     Ok(p)
 }
 
 pub fn delete_profile(id: &str) -> Result<()> {
-    let mut st = load();
+    let _guard = STATE_LOCK
+        .lock()
+        .map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
+    let mut st = load_inner()?;
     let before = st.profiles.len();
     st.profiles.retain(|x| x.id != id);
     if st.profiles.len() == before {
         return Err(AppError::Other("找不到这把密钥".into()));
     }
-    delete_profile_key(id);
-    save(&st)
+    change_key_and_save(&SystemKeys, id, None, || save(&st))
 }
 
 /// 按网关令牌 id 查找，用于判断某把 Key 是否已经导入过
-pub fn find_by_token_id(token_id: i64) -> Option<Profile> {
-    load()
-        .profiles
-        .into_iter()
-        .find(|p| p.gateway_token_id == Some(token_id))
+pub fn find_by_token_id(token_id: i64, account: &str) -> Result<Option<Profile>> {
+    Ok(load()?.profiles.into_iter().find(|p| {
+        p.gateway_token_id == Some(token_id) && p.gateway_account.as_deref() == Some(account)
+    }))
 }
 
 /// 找出当前生效的是哪一把 —— 拿实际配置里的 key 和各条的 key 逐一比对。
 /// 比对在 Rust 侧做，密钥不出后端。
-pub fn match_profile(live_key: Option<&str>) -> Option<String> {
-    let live = live_key?.trim();
-    if live.is_empty() {
-        return None;
+pub fn match_profile(live_key: Option<&str>) -> Result<Option<String>> {
+    let Some(live) = live_key.map(str::trim).filter(|k| !k.is_empty()) else {
+        return Ok(None);
+    };
+    for p in load()?.profiles {
+        if load_profile_key(&p.id)?.as_deref() == Some(live) {
+            return Ok(Some(p.id));
+        }
     }
-    load()
-        .profiles
-        .iter()
-        .find(|p| load_profile_key(&p.id).as_deref() == Some(live))
-        .map(|p| p.id.clone())
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zai_keys_use_the_gateway_and_custom_keys_their_own_urls() {
+        let gateway = "https://api.ourzai.com/v1";
+        let zai = Profile::default();
+        assert!(!zai.is_custom());
+        assert_eq!(zai.openai_base(gateway).as_deref(), Some(gateway));
+        assert_eq!(zai.anthropic_base(gateway).as_deref(), Some("https://api.ourzai.com"));
+
+        let only_claude = Profile { claude_base_url: "https://relay.example/".into(), ..Default::default() };
+        assert!(only_claude.is_custom());
+        assert_eq!(only_claude.anthropic_base(gateway).as_deref(), Some("https://relay.example"));
+        // 没填 Codex 地址就是不给 Codex 用，绝不退回 zAI 网关（那会把别家的 Key 发给我们）
+        assert_eq!(only_claude.openai_base(gateway), None);
+
+        let only_codex = Profile { codex_base_url: "https://api.openai.com/v1".into(), ..Default::default() };
+        assert_eq!(only_codex.openai_base(gateway).as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(only_codex.anthropic_base(gateway), None);
+    }
+    use std::cell::RefCell;
+
+    struct FakeKeys {
+        value: RefCell<Option<String>>,
+        fail_new: bool,
+        discard_new: bool,
+    }
+    impl KeyStore for FakeKeys {
+        fn get(&self, _: &str) -> Result<Option<String>> {
+            Ok(self.value.borrow().clone())
+        }
+        fn set(&self, _: &str, key: Option<&str>) -> Result<()> {
+            if key == Some("new") && self.fail_new {
+                return Err(AppError::Keyring("locked".into()));
+            }
+            if key != Some("new") || !self.discard_new {
+                *self.value.borrow_mut() = key.map(str::to_owned);
+            }
+            Ok(())
+        }
+    }
+    fn keys(old: Option<&str>) -> FakeKeys {
+        FakeKeys {
+            value: RefCell::new(old.map(str::to_owned)),
+            fail_new: false,
+            discard_new: false,
+        }
+    }
+    #[test]
+    fn failed_keyring_write_never_persists_metadata() {
+        let mut store = keys(Some("old"));
+        store.fail_new = true;
+        assert!(change_key_and_save(&store, "id", Some("new"), || panic!(
+            "must not save metadata"
+        ))
+        .is_err());
+        assert_eq!(store.get("id").unwrap().as_deref(), Some("old"));
+    }
+    #[test]
+    fn keyring_readback_failure_never_reports_success() {
+        let mut store = keys(Some("old"));
+        store.discard_new = true;
+        assert!(
+            change_key_and_save(&store, "id", Some("new"), || panic!("must verify first")).is_err()
+        );
+    }
+    #[test]
+    fn failed_metadata_save_restores_previous_key_or_absence() {
+        for old in [None, Some("old")] {
+            let store = keys(old);
+            assert!(
+                change_key_and_save(&store, "id", Some("new"), || Err(AppError::Io(
+                    "disk full".into()
+                )))
+                .is_err()
+            );
+            assert_eq!(store.get("id").unwrap().as_deref(), old);
+        }
+        let store = keys(Some("old"));
+        assert!(
+            change_key_and_save(&store, "id", None, || Err(AppError::Io("disk full".into())))
+                .is_err()
+        );
+        assert_eq!(store.get("id").unwrap().as_deref(), Some("old"));
+    }
+    #[test]
+    fn broken_metadata_is_not_treated_as_empty() {
+        let dir = crate::atomic::tests::TestDir::new();
+        let path = dir.0.join("state.json");
+        fs::write(&path, "{broken").unwrap();
+        assert!(read_state(&path).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "{broken");
+    }
+    #[test]
+    fn rapid_profile_ids_do_not_collide() {
+        let ids: std::collections::HashSet<_> = (0..1000).map(|_| new_id()).collect();
+        assert_eq!(ids.len(), 1000);
+    }
 
     fn p(name: &str) -> Profile {
         Profile {
@@ -227,6 +436,8 @@ mod tests {
             codex_effort: String::new(),
             claude_model: String::new(),
             gateway_token_id: None,
+            gateway_account: None,
+            ..Default::default()
         }
     }
 

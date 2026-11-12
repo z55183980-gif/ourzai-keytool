@@ -48,7 +48,12 @@ pub fn apply(config_text: &str, cfg: &ProviderConfig, cleanup: bool) -> Result<S
     {
         let root = doc.as_table_mut();
 
-        root["model"] = value(&cfg.model);
+        // 模型留空（其他服务没选模型）就不写，由客户端用它自己的默认模型
+        if cfg.model.trim().is_empty() {
+            root.remove("model");
+        } else {
+            root["model"] = value(&cfg.model);
+        }
         root["model_reasoning_effort"] = value(&cfg.reasoning_effort);
 
         match cfg.auth_mode {
@@ -199,6 +204,7 @@ pub fn current_pointing(config_text: &str) -> Option<String> {
         {
             return Some(url.to_string());
         }
+        if p != "openai" { return None; }
     }
     // 回落到旧写法
     root.get("openai_base_url")

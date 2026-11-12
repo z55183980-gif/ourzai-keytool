@@ -1,283 +1,209 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
+import { UiIcon } from "./UiIcon";
+import wordmarkUrl from "./assets/wordmark.png";
 import type { GatewayToken } from "./types";
-
-/** 官网对应页面；开发预览没有 Tauri，回落到 window.open */
-async function openWeb(path: string) {
-  const url = `https://dkby.com${path}`;
-  try {
-    await openUrl(url);
-  } catch {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
-}
+import { t } from "./i18n";
+import "./LoginPanel.css";
 
 /**
- * 登录导入：登录一次，勾选多把 Key，一次全导进来。
+ * 登录导入：只走浏览器。点开就用系统浏览器打开身份中心（account.ourzai.com）的授权页，
+ * 在那里用 Apple、Google、邮箱验证码或密码登录——和开发者控制台是同一张登录表单、同一个
+ * 登录状态，控制台已经登着的话一打开就直接回来。身份中心再通过本程序注册的协议把一次性
+ * 授权码交回来（授权码 + PKCE，见 src-tauri/src/gateway.rs），账号密码不经过本程序。
  *
- * 会话由 App 统一持有并保持到关窗口，所以导完不登出 ——
- * 用户想再导、或给某把密钥换值，都不用重新登录。
- * 密码只用来换会话，登录成功立刻从内存清掉，不落盘。
+ * 服务端没开放这条路（或连不上）时，只给「手动粘贴 API Key」。
  */
+
+async function openExternal(url: string) {
+  try { await openUrl(url); }
+  catch { window.open(url, "_blank", "noopener,noreferrer"); }
+}
+
+/** checking：问服务端开没开放；start：等用户点（失败、取消、切换账号后也回到这里）；browser：浏览器里登录中；unavailable：没开放 */
+type View = "checking" | "start" | "browser" | "unavailable";
+type Working = null | "login" | "list" | "import" | "logout" | "browser";
+type BrowserCallback = { code: string; state: string; error: string };
+
 export function LoginPanel(props: {
   loggedAs: string | null;
   tokens: GatewayToken[] | null;
-  baseUrl: string;
   ignoreProxy: boolean;
   busy: boolean;
   onLoggedIn: (user: string, tokens: GatewayToken[]) => void;
-  onLogout: () => void;
-  onImported: (created: string[], updated: string[], unchanged: string[], skipped: string[]) => void;
-  onError: (msg: string) => void;
+  onLogout: () => void | Promise<void>;
+  onImported: (created: string[], updated: string[], unchanged: string[], skipped: string[]) => void | Promise<void>;
+  onManualKey: () => void;
   onClose: () => void;
 }) {
-  const {
-    loggedAs,
-    tokens,
-    baseUrl,
-    ignoreProxy,
-    busy,
-    onLoggedIn,
-    onLogout,
-    onImported,
-    onError,
-    onClose,
-  } = props;
-
-  const [user, setUser] = useState("");
-  const [pass, setPass] = useState("");
-  const [showPass, setShowPass] = useState(false);
+  const { loggedAs, tokens, ignoreProxy, busy, onLoggedIn, onLogout, onImported, onManualKey, onClose } = props;
+  const dialog = useRef<HTMLDialogElement>(null);
+  const requestInFlight = useRef(false);
+  const id = useId();
+  const [view, setView] = useState<View>("checking");
+  const [error, setError] = useState<string | null>(null);
+  const [authenticatedAs, setAuthenticatedAs] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set());
-  const [working, setWorking] = useState<null | "login" | "import">(null);
+  const [working, setWorking] = useState<Working>(null);
+  /** 打开窗口时自动拉起浏览器只做一次（开发模式 StrictMode 会把 effect 跑两遍） */
+  const autoOpened = useRef(false);
+  const signedIn = loggedAs || authenticatedAs;
+  const disabled = busy || working !== null;
+  const fresh = tokens?.filter(x => x.usable && !x.linkedProfile) ?? [];
 
-  const doLogin = async () => {
-    setWorking("login");
-    try {
-      const name = await api.gatewayLogin(baseUrl, user.trim(), pass, ignoreProxy);
-      setPass(""); // 密码用完即丢
-      const list = await api.gatewayListTokens();
-      // 默认只勾还没导过的 —— 已关联的交给用户自己决定要不要更新
-      setPicked(new Set(list.filter((t) => t.usable && !t.linkedProfile).map((t) => t.id)));
-      onLoggedIn(name, list);
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setWorking(null);
+  useEffect(() => {
+    const element = dialog.current!;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    element.showModal();
+    return () => {
+      element.close();
+      document.body.style.overflow = overflow;
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+
+  useEffect(() => {
+    setPicked(new Set(tokens?.filter(x => x.usable && !x.linkedProfile).map(x => x.id) ?? []));
+  }, [tokens]);
+
+  async function run(kind: NonNullable<Working>, action: () => Promise<void>) {
+    if (busy || requestInFlight.current) return;
+    requestInFlight.current = true;
+    setWorking(kind); setError(null);
+    try { await action(); }
+    catch (e) { setError(t(String(e).replace(/^Error:\s*/, ""))); }
+    finally { requestInFlight.current = false; setWorking(null); }
+  }
+
+  async function loadTokens(name: string) {
+    const list = await api.gatewayListTokens();
+    onLoggedIn(name, list);
+  }
+
+  // —— 浏览器登录 ——
+  /** switchAccount：身份中心总是显示登录表单，不直接带回浏览器里登着的那个账号 */
+  const openBrowserLogin = (switchAccount = false) => run("browser", async () => {
+    await openExternal(await api.gatewayBrowserLoginStart(switchAccount));
+    setView("browser");
+  });
+
+  /** 服务端开没开放浏览器登录。autoOpen：开放了就直接打开浏览器（点「登录导入」就是要登录） */
+  const checkAvailable = (autoOpen: boolean) => {
+    setView("checking");
+    return api.gatewayBrowserLoginAvailable(ignoreProxy)
+      .then(ok => {
+        setView(ok ? "start" : "unavailable");
+        if (ok && autoOpen) void openBrowserLogin();
+      })
+      .catch(() => setView("unavailable"));
+  };
+  useEffect(() => {
+    if (signedIn || autoOpened.current) return;
+    autoOpened.current = true;
+    void checkAvailable(true);
+    // 只在打开窗口时做一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function finishBrowserLogin(callback: BrowserCallback) {
+    if (callback.error || !callback.code) {
+      setView("start");
+      setError(callback.error === "access_denied" ? t("已在浏览器中取消登录。") : t("浏览器登录没有完成，请重试。"));
+      return;
     }
+    await run("login", async () => {
+      try {
+        const name = await api.gatewayBrowserLoginFinish(callback.code, callback.state, ignoreProxy);
+        setAuthenticatedAs(name);
+        await loadTokens(name);
+      } catch (e) { setView("start"); throw e; }
+    });
+  }
+  // 回调来自后端事件；用 ref 让监听器始终调到最新的处理函数
+  const onBrowserCallback = useRef(finishBrowserLogin);
+  onBrowserCallback.current = finishBrowserLogin;
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    listen<BrowserCallback>("browser-login-callback", event => void onBrowserCallback.current(event.payload))
+      .then(unlisten => { if (gone) unlisten(); else stop = unlisten; })
+      .catch(() => {}); // 浏览器预览里没有 Tauri
+    return () => { gone = true; stop?.(); };
+  }, []);
+
+  /** 切换账号：退出本程序里的登录，再打开浏览器，并要求身份中心显示登录表单 */
+  const switchAccount = async () => {
+    await run("logout", async () => {
+      await onLogout();
+      setAuthenticatedAs(null);
+      setView("start");
+    });
+    await openBrowserLogin(true);
   };
 
-  const toggle = (id: number) => {
-    const next = new Set(picked);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setPicked(next);
-  };
+  const importKeys = (ids: number[]) => run("import", async () => {
+    const result = await api.gatewayImportTokens(ids);
+    await onImported(result.created, result.updated, result.unchanged, result.skipped);
+  });
 
-  /** 单独更新某把已关联的 Key */
-  const updateOne = async (id: number) => {
-    setWorking("import");
-    try {
-      const r = await api.gatewayImportTokens([id]);
-      onImported(r.created, r.updated, r.unchanged, r.skipped);
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setWorking(null);
-    }
-  };
+  const title = t(signedIn ? "选择要导入的密钥" : "登录 zAI 账号");
+  const lede = t(signedIn ? "导入后，即可在启动页和密钥页选择使用。"
+    : view === "unavailable" ? "暂时无法在浏览器中登录。可以先手动粘贴 API Key，不登录也能使用全部功能。"
+    : "支持 Apple、Google 或邮箱验证码；已登录控制台可继续。");
+  const alert = error && <p className="cauth-error" role="alert">{error}</p>;
+  const spinner = <span className="account-spinner" />;
+  const manual = <button type="button" className="cauth-link" disabled={disabled} onClick={onManualKey}>{t("手动粘贴 API Key")}</button>;
 
-  const doImport = async () => {
-    setWorking("import");
-    try {
-      const r = await api.gatewayImportTokens([...picked]);
-      onImported(r.created, r.updated, r.unchanged, r.skipped);
-    } catch (e) {
-      onError(String(e));
-    } finally {
-      setWorking(null);
-    }
-  };
+  return createPortal(
+    <dialog ref={dialog} className="account-dialog" aria-labelledby={`${id}-title`} aria-describedby={`${id}-lede`}
+      onCancel={event => { event.preventDefault(); if (!disabled && !requestInFlight.current) onClose(); }}>
+      <div className="cauth">
+        <button className="cauth-close" aria-label={t("关闭登录导入")} title={t("关闭")} disabled={disabled} onClick={onClose}><UiIcon name="close"/></button>
+        <header className="cauth-head">
+          <div className="cauth-heading-row"><img className="cauth-logo" src={wordmarkUrl} alt="zAI" draggable={false}/><h1 className="cauth-title" id={`${id}-title`}>{title}</h1></div>
+          <p className="cauth-lede" id={`${id}-lede`}>{lede}</p>
+        </header>
 
-  const fresh = tokens?.filter((t) => t.usable && !t.linkedProfile) ?? [];
-
-  return (
-    <article className="card on">
-      <div className="card-hd">
-        <span className="radio on" />
-        <div className="card-title">
-          <strong>登录导入</strong>
-          <span className="card-sub">
-            {loggedAs ? `已登录 ${loggedAs}` : "用星域互联的账号登录，把 Key 直接取过来"}
-          </span>
+        {signedIn ? <div className="cauth-body">
+          <div className="account-identity"><span className="account-avatar">{signedIn.slice(0, 1).toUpperCase()}</span><div><strong>{signedIn}</strong><span>{t("已连接 zAI 账号")}</span></div><button className="cauth-link" disabled={disabled} onClick={() => void switchAccount()}>{t("切换账号")}</button></div>
+          {tokens === null ? <div className="account-empty"><UiIcon name="refresh"/><strong>{working === "login" || working === "list" ? t("正在读取密钥…") : t("密钥列表尚未加载")}</strong><button className="cauth-link" disabled={disabled} onClick={() => void run("list", () => loadTokens(signedIn))}>{t("重新加载")}</button></div> : tokens.length === 0 ? <div className="account-empty"><UiIcon name="key"/><strong>{t("还没有可导入的密钥")}</strong><p>{t("在开发者控制台创建后，回来刷新列表。")}</p><button className="cauth-link" disabled={disabled} onClick={() => void run("list", () => loadTokens(signedIn))}>{t("刷新列表")}</button></div> : <>
+            <div className="account-list-heading"><span>{t("{n} 个密钥 · 已选 {picked} 个", { n: tokens.length, picked: picked.size })}</span><button className="cauth-link" disabled={disabled || fresh.length === 0} onClick={() => setPicked(picked.size === fresh.length ? new Set() : new Set(fresh.map(x => x.id)))}>{picked.size === fresh.length && fresh.length > 0 ? t("取消全选") : t("全选可导入项")}</button></div>
+            <div className="account-token-list">{tokens.map(token => token.linkedProfile ? <div className="account-token linked" key={token.id}><UiIcon name="check"/><div><strong>{token.name}</strong><span>{token.usable ? t("已关联「{name}」", { name: token.linkedProfile }) : t(token.note || "当前不可用")}</span></div><button className="cauth-link" disabled={disabled || !token.usable} onClick={() => void importKeys([token.id])}>{t("更新")}</button></div> : <label className={`account-token ${picked.has(token.id) ? "selected" : ""} ${token.usable ? "" : "unavailable"}`} key={token.id}><input type="checkbox" checked={picked.has(token.id)} disabled={disabled || !token.usable} onChange={() => setPicked(previous => { const next = new Set(previous); if (next.has(token.id)) next.delete(token.id); else next.add(token.id); return next; })}/><div><strong>{token.name}</strong><span>{t(token.note || "可导入")}</span></div></label>)}</div>
+          </>}
+          {alert}
+          <button className="cauth-submit primary" disabled={disabled || picked.size === 0} onClick={() => void importKeys([...picked])}>{working === "import" ? <>{spinner}{t("正在导入…")}</> : t("导入选中的 {n} 个密钥", { n: picked.size })}</button>
         </div>
-        {loggedAs && (
-          <button className="ghost sm" onClick={onLogout} disabled={busy || working !== null}>
-            退出登录
-          </button>
-        )}
-        <button className="ghost sm" onClick={onClose} disabled={working !== null}>
-          关闭
-        </button>
-      </div>
 
-      <div className="card-body">
-        {!loggedAs ? (
-          // 表单结构和文案对齐 dkby.com 的登录页 —— 用户注册时见过同一套，
-          // 样式一致能降低"这程序是不是假的"的疑虑
-          <div className="login-form">
-            <div className="login-title">用户登录</div>
-            <div className="login-sub">
-              没有账号？{" "}
-              <button className="linkish" onClick={() => void openWeb("/sign-up")}>
-                注册
-              </button>
-              .
-            </div>
-
-            <div className="field">
-              <label>用户名或电子邮件</label>
-              <input
-                value={user}
-                onChange={(e) => setUser(e.target.value)}
-                placeholder="输入您的用户名或电子邮件"
-                spellCheck={false}
-                autoComplete="off"
-                disabled={working !== null}
-              />
-            </div>
-
-            <div className="field">
-              <label className="label-row">
-                <span>密码</span>
-                <button className="linkish" onClick={() => void openWeb("/forgot-password")}>
-                  忘记密码？
-                </button>
-              </label>
-              <div className="pw">
-                <input
-                  type={showPass ? "text" : "password"}
-                  value={pass}
-                  onChange={(e) => setPass(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && doLogin()}
-                  placeholder="输入密码"
-                  autoComplete="off"
-                  disabled={working !== null}
-                />
-                <button
-                  className="pw-eye"
-                  onClick={() => setShowPass((v) => !v)}
-                  title={showPass ? "隐藏密码" : "显示密码"}
-                  aria-label={showPass ? "隐藏密码" : "显示密码"}
-                  disabled={working !== null}
-                >
-                  {showPass ? (
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <button className="login-submit" onClick={doLogin} disabled={working !== null}>
-              {/* 官网用的是 Lucide 的 LogIn 图标 */}
-              <svg
-                viewBox="0 0 24 24"
-                width="17"
-                height="17"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                <polyline points="10 17 15 12 10 7" />
-                <line x1="15" x2="3" y1="12" y2="12" />
-              </svg>
-              {working === "login" ? "登录中…" : "登录"}
-            </button>
-
-            <div className="dim login-note">密码只用来登录一次，不会保存</div>
+        : view === "browser" ? <div className="cauth-body">
+          <div className="cauth-waiting">{spinner}<strong>{working === "login" ? t("正在登录…") : t("请在浏览器中完成登录")}</strong></div>
+          {alert}
+          <div className="cauth-row">
+            {manual}
+            <button type="button" className="cauth-link" disabled={disabled} onClick={() => void openBrowserLogin()}>{t("重新打开浏览器")}</button>
           </div>
-        ) : (
-          <>
-            {tokens && tokens.length === 0 ? (
-              <div className="hint">这个账号下还没有 Key，先去官网建一个。</div>
-            ) : (
-              <>
-                <div className="row logged">
-                  <span className="dim">勾选要导入的 Key</span>
-                  <button
-                    className="ghost sm"
-                    onClick={() =>
-                      setPicked(
-                        picked.size === fresh.length
-                          ? new Set()
-                          : new Set(fresh.map((t) => t.id)),
-                      )
-                    }
-                    disabled={working !== null}
-                  >
-                    {picked.size === fresh.length && fresh.length > 0 ? "全不选" : "全选未导入的"}
-                  </button>
-                </div>
+        </div>
 
-                {tokens?.map((t) =>
-                  t.linkedProfile ? (
-                    // 已经导过：不给勾选框，只给「更新」—— 把密钥换成最新值，不重复新建
-                    <div key={t.id} className="token">
-                      <span className="linked-dot" />
-                      <div className="token-main">
-                        <strong>{t.name}</strong>
-                        <span className="dim">已关联「{t.linkedProfile}」</span>
-                      </div>
-                      <button
-                        className="ghost sm"
-                        onClick={() => void updateOne(t.id)}
-                        disabled={!t.usable || working !== null}
-                      >
-                        {working === "import" ? "处理中…" : "更新"}
-                      </button>
-                    </div>
-                  ) : (
-                    <label key={t.id} className={`token ${t.usable ? "" : "off"}`}>
-                      <input
-                        type="checkbox"
-                        checked={picked.has(t.id)}
-                        onChange={() => toggle(t.id)}
-                        disabled={!t.usable || working !== null}
-                      />
-                      <div className="token-main">
-                        <strong>{t.name}</strong>
-                        {t.note && <span className="dim">{t.note}</span>}
-                      </div>
-                    </label>
-                  ),
-                )}
+        : view === "unavailable" ? <div className="cauth-body">
+          {alert}
+          <button type="button" className="cauth-submit primary" disabled={disabled} onClick={onManualKey}>{t("手动粘贴 API Key")}</button>
+          <p className="cauth-foot"><button type="button" className="cauth-link" disabled={disabled} onClick={() => void checkAvailable(false)}>{t("重新检查")}</button></p>
+        </div>
 
-                <div className="row end">
-                  <button
-                    className="primary"
-                    onClick={doImport}
-                    disabled={picked.size === 0 || working !== null}
-                  >
-                    {working === "import" ? "导入中…" : `导入选中的 ${picked.size} 个`}
-                  </button>
-                </div>
-              </>
-            )}
-          </>
-        )}
+        : <div className="cauth-body">
+          {alert}
+          <button type="button" className="cauth-submit primary" disabled={disabled || view === "checking"} onClick={() => void openBrowserLogin()}>
+            {view === "checking" || working === "browser" ? <>{spinner}{t("正在打开浏览器…")}</> : <><UiIcon name="external"/>{t("在浏览器中登录")}</>}
+          </button>
+          <p className="cauth-foot">{manual}</p>
+        </div>}
+
+        {!signedIn && <p className="cauth-trust"><UiIcon name="shield"/>{t("在 account.ourzai.com 登录，密码不会经过本程序")}</p>}
       </div>
-    </article>
+    </dialog>, document.body,
   );
 }

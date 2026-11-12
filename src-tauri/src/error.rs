@@ -19,7 +19,7 @@ pub enum AppError {
     #[error("网络连接出错：{0}")]
     Network(String),
 
-    #[error("保存 API Key 时出错：{0}")]
+    #[error("访问系统密钥库时出错：{0}")]
     Keyring(String),
 
     #[error("{0}")]

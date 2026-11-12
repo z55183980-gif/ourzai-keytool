@@ -7,14 +7,15 @@
   ],
   "permissions": [
     "core:default",
+    "dialog:allow-open",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://dkby.com/*"
+          "url": "https://ourzai.com/*"
         },
         {
-          "url": "https://*.dkby.com/*"
+          "url": "https://account.ourzai.com/*"
         }
       ]
     }

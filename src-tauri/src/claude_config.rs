@@ -82,7 +82,12 @@ pub fn merge(text: Option<&str>, s: &ClaudeSettings) -> Result<String> {
 
     env.insert(KEY_BASE_URL.into(), Value::String(s.base_url.clone()));
     env.insert(KEY_AUTH_TOKEN.into(), Value::String(s.auth_token.clone()));
-    env.insert(KEY_MODEL.into(), Value::String(s.model.clone()));
+    // 模型留空（其他服务没选模型）就不写，由 Claude Code 用它自己的默认模型
+    if s.model.trim().is_empty() {
+        env.remove(KEY_MODEL);
+    } else {
+        env.insert(KEY_MODEL.into(), Value::String(s.model.clone()));
+    }
 
     for (key, val) in [
         (KEY_DEFAULT_OPUS, &s.opus_model),
@@ -190,7 +195,7 @@ mod tests {
 
     fn s() -> ClaudeSettings {
         ClaudeSettings {
-            base_url: "https://api.dkby.com".into(),
+            base_url: "https://api.ourzai.com".into(),
             auth_token: "sk-test".into(),
             model: "claude-opus-4-8".into(),
             opus_model: "claude-opus-4-8".into(),
@@ -201,23 +206,28 @@ mod tests {
 
     #[test]
     fn derives_base_url_without_v1() {
+        // （顺带）模型留空时不写 ANTHROPIC_MODEL，旧值也清掉
+        let mut empty = s();
+        empty.model = String::new();
+        let merged = merge(Some(r#"{"env":{"ANTHROPIC_MODEL":"old"}}"#), &empty).unwrap();
+        assert!(!merged.contains("ANTHROPIC_MODEL"));
         assert_eq!(
-            derive_anthropic_base_url("https://api.dkby.com/v1"),
-            "https://api.dkby.com"
+            derive_anthropic_base_url("https://api.ourzai.com/v1"),
+            "https://api.ourzai.com"
         );
         assert_eq!(
-            derive_anthropic_base_url("https://api.dkby.com/v1/"),
-            "https://api.dkby.com"
+            derive_anthropic_base_url("https://api.ourzai.com/v1/"),
+            "https://api.ourzai.com"
         );
         // 本来就没有 /v1 的原样返回
         assert_eq!(
-            derive_anthropic_base_url("https://api.dkby.com"),
-            "https://api.dkby.com"
+            derive_anthropic_base_url("https://api.ourzai.com"),
+            "https://api.ourzai.com"
         );
         // 不能误伤路径里别处的 v1
         assert_eq!(
-            derive_anthropic_base_url("https://api.dkby.com/v1/gw/v1"),
-            "https://api.dkby.com/v1/gw"
+            derive_anthropic_base_url("https://api.ourzai.com/v1/gw/v1"),
+            "https://api.ourzai.com/v1/gw"
         );
     }
 
@@ -226,7 +236,7 @@ mod tests {
         // cc-switch issue #1790/#1104：漏写 ANTHROPIC_MODEL。我们必须三个都写。
         let out = merge(None, &s()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["env"][KEY_BASE_URL], "https://api.dkby.com");
+        assert_eq!(v["env"][KEY_BASE_URL], "https://api.ourzai.com");
         assert_eq!(v["env"][KEY_AUTH_TOKEN], "sk-test");
         assert_eq!(v["env"][KEY_MODEL], "claude-opus-4-8");
         assert_eq!(v["env"][KEY_DEFAULT_OPUS], "claude-opus-4-8");
@@ -249,7 +259,7 @@ mod tests {
         assert!(v["hooks"]["Stop"].is_array(), "hooks 必须保留");
         assert_eq!(v["statusLine"]["command"], "mystatus");
         assert_eq!(v["env"]["MY_OWN_VAR"], "keepme", "用户自己的环境变量必须保留");
-        assert_eq!(v["env"][KEY_BASE_URL], "https://api.dkby.com");
+        assert_eq!(v["env"][KEY_BASE_URL], "https://api.ourzai.com");
     }
 
     #[test]
