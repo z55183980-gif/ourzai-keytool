@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { launchWithConfiguration } from '../src/launchFlow.ts';
 
 const request = { profileId:'key-1', baseUrl:'https://api.ourzai.com/v1', model:'model', reasoningEffort:'medium', claudeModel:'claude-model' };
-const config = (status = 'official', id = null) => ({ configurationStatus:status, activeProfileId:id, currentModel:'model', currentReasoningEffort:'medium' });
+const config = (status = 'official', id = null, currentModel = 'model') => ({ configurationStatus:status, activeProfileId:id, currentModel, currentReasoningEffort:'medium' });
 const environment = value => ({ codex:value, claude:value });
 function fixture(states = [environment(config())]) {
   const calls = [], configured = [];
@@ -62,4 +62,30 @@ test('official service with a remaining external override does not launch', asyn
 test('spawn failure leaves the successful backup available for undo', async () => {
   const f=fixture([environment(config()),environment(config('configured','key-1'))]); f.deps.launchClient=async()=>{throw Error('spawn failed');};
   await assert.rejects(f.run('key-1'),/spawn failed/); assert.equal(f.configured[0].backupId,'backup-1');
+});
+
+function claudeFixture(states = [environment(config())], claudeModel = 'claude-model') {
+  const calls = [], configured = [];
+  const request = { profileId:'key-1', baseUrl:'https://api.ourzai.com/v1', model:'', reasoningEffort:'medium', claudeModel };
+  const deps = {
+    validateLaunch: async () => { calls.push('validate'); },
+    scanEnvironment: async () => { calls.push('scan'); return states.length > 1 ? states.shift() : states[0]; },
+    applyConfig: async () => { calls.push('apply'); return { backupId:'backup-claude' }; },
+    revertToOfficial: async () => { calls.push('revert'); return 'backup-claude-official'; },
+    launchClient: async () => { calls.push('launch'); return { message:'requested' }; },
+  };
+  return { calls, deps, configured, run:(service='current', mode='cli') => launchWithConfiguration('claude', mode, service, 'C:\\project', request, deps, r=>configured.push(r)) };
+}
+
+test('Claude desktop launch applies and verifies the selected key and URL', async () => {
+  const f=claudeFixture([environment(config('official')),environment(config('configured','key-1','claude-model'))]);
+  await f.run('key-1','desktop');
+  assert.deepEqual(f.calls,['validate','scan','apply','scan','launch']);
+  assert.equal(f.configured[0].backupId,'backup-claude');
+});
+
+test('Claude desktop custom service with no model does not rewrite every launch', async () => {
+  const f=claudeFixture([environment(config('configured','key-1',null))], '');
+  await f.run('key-1','desktop');
+  assert.deepEqual(f.calls,['validate','scan','launch']);
 });

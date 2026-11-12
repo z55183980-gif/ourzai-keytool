@@ -385,6 +385,9 @@ export default function App() {
   /** 把一把密钥写进某个工具的用户配置（不启动客户端） */
   const enable = async (profileId: string, tool: AppId, rebuild = false): Promise<boolean> => {
     const p = profiles.find((x) => x.id === profileId);
+    const claudeAliases = p?.custom
+      ? { opus: "", sonnet: "", haiku: "" }
+      : { opus: aliasOpus, sonnet: aliasSonnet, haiku: aliasHaiku };
     setBusy("apply");
     log("cmd", t(rebuild ? "重建 {tool} 配置" : "写入 {tool} 配置", { tool: APP_META[tool].name }) + ` · ${p?.name ?? t("所选密钥")}`);
     try {
@@ -401,9 +404,9 @@ export default function App() {
         conservative,
         configureClaude: tool === "claude",
         claudeModel: modelFor("claude", p),
-        claudeOpusModel: aliasOpus,
-        claudeSonnetModel: aliasSonnet,
-        claudeHaikuModel: aliasHaiku,
+        claudeOpusModel: claudeAliases.opus,
+        claudeSonnetModel: claudeAliases.sonnet,
+        claudeHaikuModel: claudeAliases.haiku,
       });
       logResult(r);
       setToast({
@@ -427,6 +430,9 @@ export default function App() {
     let changed = false;
     try {
       const p = profiles.find(profile => profile.id === service);
+      const claudeAliases = p?.custom
+        ? { opus: "", sonnet: "", haiku: "" }
+        : { opus: aliasOpus, sonnet: aliasSonnet, haiku: aliasHaiku };
       log("cmd", t("启动 {name}", { name: `${tool === "claude" ? "Claude" : "Codex"} ${mode === "cli" ? "CLI" : t("桌面版")}` }) + ` · ${service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : p?.name ?? t("所选密钥")}`);
       if (!["current", "official"].includes(service) && !p?.hasKey) throw new Error(t("所选密钥不可用，请重新选择"));
       const receipt = await launchWithConfiguration(tool, mode, service, directory, {
@@ -437,7 +443,7 @@ export default function App() {
         model: modelFor("codex", p), reasoningEffort: p?.codexEffort || "medium",
         cleanupResidue: false, overwriteOfficialAuth: false, conservative: false,
         claudeModel: modelFor("claude", p),
-        claudeOpusModel: aliasOpus, claudeSonnetModel: aliasSonnet, claudeHaikuModel: aliasHaiku,
+        claudeOpusModel: claudeAliases.opus, claudeSonnetModel: claudeAliases.sonnet, claudeHaikuModel: claudeAliases.haiku,
       }, api, r => { changed = true; logResult(r); });
       setToast({ kind: "ok", text: receipt.message });
       return true;

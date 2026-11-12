@@ -38,7 +38,8 @@ export async function launchWithConfiguration(
   } else {
     const expectedModel = tool === "codex" ? applyRequest.model : applyRequest.claudeModel;
     const matches = current.configurationStatus === "configured" && current.activeProfileId === service
-      && current.currentModel === expectedModel
+      // Custom Claude services may intentionally omit a model; detect reports that as null.
+      && (current.currentModel ?? "") === expectedModel
       && (tool !== "codex" || env.codex.currentReasoningEffort === applyRequest.reasoningEffort);
     if (!matches) {
       onConfigured(await dependencies.applyConfig(applyRequest));
