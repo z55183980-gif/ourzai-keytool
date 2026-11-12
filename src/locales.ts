@@ -344,6 +344,8 @@ export const DICT: Record<string, [string, string]> = {
   "没有填 {tool} 地址": ["沒有填 {tool} 位址", "No {tool} address"],
   "登录 zAI 就能让 zAI 帮你看看报错，新账号送体验额度": ["登入 zAI 就能讓 zAI 幫你看看錯誤，新帳戶送體驗額度", "Sign in to zAI to have it look at errors for you—new accounts get free credits"],
   "登录 zAI": ["登入 zAI", "Sign in to zAI"],
+  "选择或导入 zAI Key": ["選擇或匯入 zAI Key", "Choose or import a zAI key"],
+  "AI 诊断需要 zAI Key，请选择或导入一把 zAI Key": ["AI 診斷需要 zAI Key，請選擇或匯入一把 zAI Key", "AI diagnosis requires a zAI key. Choose or import one."],
   "登录 zAI 账号一键导入，并同步控制台里的密钥状态；也可以粘贴 zAI 或其他服务的 API Key，不登录也能用。": ["登入 zAI 帳戶一鍵匯入，並同步控制台裡的密鑰狀態；也可以貼上 zAI 或其他服務的 API Key，不登入也能使用。", "Sign in to zAI to import keys in one click and keep their status in sync, or paste an API key from zAI or another provider—no sign-in needed."],
   "这把密钥没有填 Codex 地址，不能给 Codex 用": ["這把密鑰沒有填 Codex 位址，不能給 Codex 使用", "This key has no Codex address, so Codex can’t use it"],
   "这把密钥没有填 Claude Code 地址，不能给 Claude Code 用": ["這把密鑰沒有填 Claude Code 位址，不能給 Claude Code 使用", "This key has no Claude Code address, so Claude Code can’t use it"],

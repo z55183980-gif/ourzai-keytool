@@ -250,12 +250,13 @@ pub fn parse_reply(text: &str) -> Option<Diagnosis> {
 
 const FAILED: &str = "zAI 暂时看不了，稍后重试";
 
-/// 选一个这把密钥能用的模型：
-/// 1. 配置的 diagnose_model（默认 DeepSeek）；
-/// 2. 网关上任一 DeepSeek 模型（不挑 reasoner，推理模型慢）；
-/// 3. 依次退到给定的 Claude 模型。
-/// 拿不到可用列表时直接用 diagnose_model。
-pub fn pick_model(diagnose_model: &str, fallbacks: &[&str], available: &[String]) -> Option<String> {
+/// 选择配置指定的诊断模型。
+///
+/// 诊断模型是配置的一部分，不能因为 `/models` 列表缺少它就悄悄切换到
+/// 另一家模型，否则调用记录与用户看到的配置会不一致。拿不到模型列表时
+/// 继续使用配置值；列表明确返回且不包含配置值时返回 `None`，由调用方给出
+/// 可操作的错误，而不是发出一条使用了意外模型的请求。
+pub fn pick_model(diagnose_model: &str, available: &[String]) -> Option<String> {
     let preferred = diagnose_model.trim();
     if available.is_empty() {
         return (!preferred.is_empty()).then(|| preferred.to_string());
@@ -264,18 +265,7 @@ pub fn pick_model(diagnose_model: &str, fallbacks: &[&str], available: &[String]
     if !preferred.is_empty() && has(preferred) {
         return Some(preferred.to_string());
     }
-    let mut deepseek: Vec<&String> = available
-        .iter()
-        .filter(|m| m.to_ascii_lowercase().starts_with("deepseek"))
-        .collect();
-    deepseek.sort_by_key(|m| m.to_ascii_lowercase().contains("reasoner"));
-    if let Some(m) = deepseek.first() {
-        return Some(m.to_string());
-    }
-    fallbacks
-        .iter()
-        .find(|m| !m.trim().is_empty() && has(m))
-        .map(|m| m.to_string())
+    None
 }
 
 /// claude-* 走 Anthropic Messages，其余（DeepSeek 等）走 OpenAI 兼容的 Chat Completions
@@ -463,18 +453,17 @@ mod tests {
     }
 
     #[test]
-    fn picks_available_model() {
-        let fb = ["claude-haiku-5-5", "claude-sonnet-5-5"];
+    fn selects_configured_model_without_fallback() {
         let avail = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // 配置的模型在列表里
-        assert_eq!(pick_model("deepseek-chat", &fb, &avail(&["deepseek-chat", "claude-sonnet-5-5"])).as_deref(), Some("deepseek-chat"));
-        // 名字对不上时，挑任一 DeepSeek，非推理模型优先
-        assert_eq!(pick_model("deepseek-chat", &fb, &avail(&["deepseek-r1-reasoner", "deepseek-v3.2"])).as_deref(), Some("deepseek-v3.2"));
-        // 没有 DeepSeek 就退到 Claude
-        assert_eq!(pick_model("deepseek-chat", &fb, &avail(&["gpt-6-sol", "claude-sonnet-5-5"])).as_deref(), Some("claude-sonnet-5-5"));
-        assert_eq!(pick_model("deepseek-chat", &fb, &avail(&["gpt-6-sol"])), None);
+        assert_eq!(pick_model("deepseek-chat", &avail(&["deepseek-chat", "claude-sonnet-5-5"])).as_deref(), Some("deepseek-chat"));
+        // 配置模型不可用时不再静默改用其他 DeepSeek 或 Claude
+        assert_eq!(pick_model("deepseek-chat", &avail(&["deepseek-r1-reasoner", "deepseek-v3.2"])), None);
+        assert_eq!(pick_model("deepseek-chat", &avail(&["gpt-6-sol", "claude-sonnet-5-5"])), None);
+        assert_eq!(pick_model("deepseek-chat", &avail(&["gpt-6-sol"])), None);
         // 拿不到列表
-        assert_eq!(pick_model("deepseek-chat", &fb, &[]).as_deref(), Some("deepseek-chat"));
+        assert_eq!(pick_model("deepseek-chat", &[]).as_deref(), Some("deepseek-chat"));
+        assert_eq!(pick_model("", &avail(&["claude-sonnet-5-5"])), None);
     }
 
     #[test]

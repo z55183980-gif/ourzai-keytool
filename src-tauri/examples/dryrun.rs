@@ -49,8 +49,8 @@ fn main() {
 
     let provider = ProviderConfig {
         provider_id: "starnexus".into(),
-        display_name: "StarNexus".into(),
-        base_url: "https://api.dkby.com/v1".into(),
+        display_name: "zAI".into(),
+        base_url: "https://api.ourzai.com/v1".into(),
         wire_api: "responses".into(),
         model: "gpt-5.3-codex".into(),
         reasoning_effort: "medium".into(),
@@ -124,7 +124,7 @@ fn main() {
             .unwrap_or_default();
 
         let settings = ClaudeSettings {
-            base_url: claude_config::derive_anthropic_base_url("https://api.dkby.com/v1"),
+            base_url: claude_config::derive_anthropic_base_url("https://api.ourzai.com/v1"),
             auth_token: "sk-DRYRUN".into(),
             model: "claude-opus-4-8".into(),
             opus_model: "claude-opus-4-8".into(),

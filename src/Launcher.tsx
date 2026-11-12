@@ -252,7 +252,7 @@ export function Launcher(props: {
     const selected = props.profiles.find(p => p.id === service);
     // 修复要用一把 zAI 密钥写入：优先所选的，其次当前配置正在用的；选了官方服务时不提供写入
     const fixProfile = service === "official" ? null : selected?.hasKey ? selected.id : activeProfile?.hasKey ? activeProfile.id : null;
-    // AI 诊断用哪把 zAI 密钥调模型：所选 → 当前在用 → 任一可用。其他服务的密钥不用来付诊断费
+    // AI 诊断只用 zAI 密钥：所选 zAI → 当前在用 zAI → 任一可用 zAI；其他渠道不参与诊断
     const zai = (p?: Profile) => !!p?.hasKey && !p.custom;
     const aiProfile = (zai(selected) ? selected : zai(activeProfile) ? activeProfile : props.profiles.find(zai))?.id;
     const serviceLabel = service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : selected?.name ?? t("所选密钥");
@@ -489,9 +489,9 @@ export function Launcher(props: {
     const prompt: ConsolePrompt = {
       enabled: consented(tool) && !!aiProfile && !blocked && !thinking,
       busy: thinking === tool,
-      placeholder: t(!consented(tool) ? "先读取本机配置，才能让 zAI 帮你看看" : !aiProfile ? "登录 zAI 就能让 zAI 帮你看看报错，新账号送体验额度" : blocked ? "先处理上面的密钥或网络问题，才能让 zAI 帮你看看" : "遇到报错？粘贴到这里，回车让 zAI 帮你看看"),
+      placeholder: t(!consented(tool) ? "先读取本机配置，才能让 zAI 帮你看看" : !aiProfile ? "AI 诊断需要 zAI Key，请选择或导入一把 zAI Key" : blocked ? "先处理上面的密钥或网络问题，才能让 zAI 帮你看看" : "遇到报错？粘贴到这里，回车让 zAI 帮你看看"),
       onSubmit: note => void askAi(tool, mode, note),
-      unlock: consented(tool) && !aiProfile ? { label: t("登录 zAI"), run: props.onLoginImport } : undefined,
+      unlock: consented(tool) && !aiProfile ? { label: t("选择或导入 zAI Key"), run: props.onLoginImport } : undefined,
     };
     const checking = streaming || refreshing || !scan || issues === null;
 

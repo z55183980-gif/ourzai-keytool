@@ -1122,7 +1122,7 @@ pub struct DiagnoseRequest {
     pub health: HealthRequest,
     /// "desktop" | "cli"
     pub mode: String,
-    /// 用哪把密钥调模型（前端按「卡片所选 → 当前在用 → 任一可用」选出）
+    /// 用哪把 zAI 密钥调模型（前端只从 zAI 密钥中选择）
     pub profile_id: String,
     /// 用户填的报错，可为空
     #[serde(default)]
@@ -1162,20 +1162,22 @@ pub async fn ai_diagnose(
 
 pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Result<PreparedDiagnosis> {
     use health::Tool;
+    // AI 诊断只允许走 zAI 网关。其他渠道的模型目录和接口协议不受本工具控制，
+    // 即使能连通也不能保证使用配置中的诊断模型；在任何体检或网络请求前直接拒绝。
+    let payer = state::find_profile(&req.profile_id)?
+        .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
+    if payer.is_custom() {
+        return Err(AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()));
+    }
+    let key = state::load_profile_key(&req.profile_id)?
+        .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
+
     let issues = run_health(&req.health, cache).await?;
     // 诊断用的是 profile_id 那把 zAI 密钥。被体检的正是它、而它连不上或无效时，诊断也发不出去；
     // 被体检的是别的服务时（比如其他服务的密钥坏了），正是该让 zAI 看看的时候
     if req.health.service == req.profile_id && issues.iter().any(|i| i.id == "K1" || i.id == "K2") {
         return Err(AppError::Other("先处理密钥或网络问题，才能让 zAI 帮你看看".into()));
     }
-    let payer = state::find_profile(&req.profile_id)?
-        .ok_or_else(|| AppError::Other("先登录 zAI 并导入密钥，才能让 zAI 帮你看看".into()))?;
-    if payer.is_custom() {
-        return Err(AppError::Other("先登录 zAI 并导入密钥，才能让 zAI 帮你看看".into()));
-    }
-    let key = state::load_profile_key(&req.profile_id)?
-        .ok_or_else(|| AppError::Other("先登录 zAI 并导入密钥，才能让 zAI 帮你看看".into()))?;
-
     let openai_base = req.health.base_url.trim_end_matches('/').to_string();
     let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
     let home = home.as_deref();
@@ -1230,17 +1232,13 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
         health::Connection::Ok(models) => models,
         _ => Vec::new(),
     };
-    let model = diagnose::pick_model(
-        &defaults.diagnose_model,
-        &[
-            "claude-haiku-5-5",
-            &defaults.claude_haiku_model,
-            "claude-sonnet-5-5",
-            &defaults.claude_sonnet_model,
-        ],
-        &available,
-    )
-    .ok_or_else(|| AppError::Other("这把密钥没有可用于分析的模型".into()))?;
+    let configured_model = defaults.diagnose_model.trim();
+    let model = diagnose::pick_model(configured_model, &available).ok_or_else(|| {
+        AppError::Other(format!(
+            "配置的诊断模型 {} 不在这把密钥的可用模型列表中，请更新诊断模型配置或更换密钥",
+            if configured_model.is_empty() { "（未设置）" } else { configured_model }
+        ))
+    })?;
 
     Ok(PreparedDiagnosis {
         model,

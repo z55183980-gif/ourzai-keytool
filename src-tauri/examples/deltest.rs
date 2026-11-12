@@ -6,14 +6,14 @@
 use dbkey_lib::state;
 
 fn dump(tag: &str) {
-    let st = state::load();
+    let st = state::load().expect("读取本地状态失败");
     println!("{} profiles={}", tag, st.profiles.len());
     for p in &st.profiles {
         println!(
             "   id={} name={} hasKey={}",
             p.id,
             p.name,
-            state::load_profile_key(&p.id).is_some()
+            state::load_profile_key(&p.id).expect("读取密钥库失败").is_some()
         );
     }
 }
@@ -21,7 +21,7 @@ fn dump(tag: &str) {
 fn main() {
     dump("[before]");
 
-    let st = state::load();
+    let st = state::load().expect("读取本地状态失败");
     let Some(first) = st.profiles.first().cloned() else {
         println!("没有账号可删，先在界面里加一个再跑");
         return;
@@ -40,6 +40,6 @@ fn main() {
 
     println!(
         "\n密钥库条目是否已清: {}",
-        state::load_profile_key(&first.id).is_none()
+        state::load_profile_key(&first.id).expect("读取密钥库失败").is_none()
     );
 }
