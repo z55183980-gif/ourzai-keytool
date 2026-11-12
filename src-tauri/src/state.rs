@@ -443,27 +443,31 @@ mod tests {
 
     #[test]
     fn default_name_skips_taken_numbers() {
-        let list = vec![p("密钥 1"), p("密钥 3")];
-        assert_eq!(next_default_name(&list), "密钥 2");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let list = vec![p(&format!("{prefix} 1")), p(&format!("{prefix} 3"))];
+        assert_eq!(next_default_name(&list), format!("{prefix} 2"));
     }
 
     /// 回归：曾经用「个数+1」取名，删掉中间一个后新建会重名
     #[test]
     fn default_name_avoids_collision_after_delete() {
-        // 原本有 密钥 1 / 密钥 2，删掉 密钥 1 后只剩一个
-        let list = vec![p("密钥 2")];
-        assert_eq!(next_default_name(&list), "密钥 1");
+        // 原本有默认名 1 / 2，删掉 1 后只剩一个
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let list = vec![p(&format!("{prefix} 2"))];
+        assert_eq!(next_default_name(&list), format!("{prefix} 1"));
     }
 
     #[test]
     fn default_name_on_empty_list() {
-        assert_eq!(next_default_name(&[]), "密钥 1");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        assert_eq!(next_default_name(&[]), format!("{prefix} 1"));
     }
 
     #[test]
     fn custom_names_do_not_block_numbering() {
         let list = vec![p("主号"), p("测试号")];
-        assert_eq!(next_default_name(&list), "密钥 1");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        assert_eq!(next_default_name(&list), format!("{prefix} 1"));
     }
 }
 
