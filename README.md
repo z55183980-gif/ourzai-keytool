@@ -12,8 +12,6 @@
 - 启动偏好（程序路径、所选密钥的 ID、工作目录和最近项目）单独保存在 `~/.dbkey/launcher.json`，不包含密钥值。启动命令不携带密钥。
 - CLI 读取的项目级配置与客户端自身认证仍可能覆盖用户级配置，应在终端中确认实际服务。Windows 的 npm PowerShell 启动脚本只对新终端进程设置执行策略，不修改系统策略。
 
-写入内核参照 [cc-switch](https://github.com/farion1231/cc-switch)（MIT）的做法，但砍掉了多供应商管理层 —— 我们只服务一个网关。
-
 ## 技术栈
 
 - Tauri 2 + React 19 + TypeScript + Vite
