@@ -28,3 +28,6 @@ src-tauri/target
 
 # Tauri 更新器签名私钥，一旦泄露别人就能冒充发版
 *.key
+
+# 本机打出的安装包，体积大，发布走 GitHub Releases
+artifacts/
