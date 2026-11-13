@@ -170,13 +170,10 @@ export function Launcher(props: {
     if (config.configurationStatus === "configured") return props.profiles.find(p => p.id === config.activeProfileId && p.hasKey)?.id ?? null;
     return null;
   };
-  /**
-   * 实际生效的服务。保存的是「沿用当前配置」时：当前配置对得上某一项就当作选了那一项
-   * （和沿用效果一样，界面上不再多出一个重复的选项）；对不上才真的是「保持现有配置」。
-   */
+  /** Keep the user's launch policy separate from the detected configuration. */
   const serviceFor = (tool: ToolId): string => {
     const saved = prefs?.[`${tool}Service`] ?? "current";
-    return saved === "current" ? matchedService(tool) ?? "current" : saved;
+    return saved;
   };
 
   // 两个工具都体检，不只当前页面的那个：操作栏要靠它显示红点。
@@ -581,7 +578,7 @@ export function Launcher(props: {
       {picker === "service" && <PickerDialog title={t("{tool} 使用的服务", { tool: meta.name })} onClose={() => setPicker(null)}
         footer={<button className="site" disabled={disabled} onClick={() => { setPicker(null); props.onKeys(tool); }}>{t("管理密钥 →")}</button>}>
         <div className="service-list" role="radiogroup" aria-label={t("{tool} 使用服务", { tool: meta.name })}>
-          {!matchedService(tool) && option("current", keepTitle, [t("不改动配置文件"), config?.currentModel], { bad: config?.configurationStatus === "broken" })}
+          {option("current", keepTitle, [t("不改动配置文件"), config?.currentModel], { bad: config?.configurationStatus === "broken" })}
           {option("official", t("官方服务"), [t("使用你自己的官方账号登录")], { current: config?.configurationStatus === "official" })}
           {props.profiles.map(p => option(p.id, profileTitle(p),
             !p.hasKey ? [t("缺少密钥，请到密钥页补上")]

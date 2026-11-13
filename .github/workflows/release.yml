@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -57,11 +57,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Test frontend regressions
+        run: npm test
+
       # 测试锁着几次真实事故（env_key、废弃的 SMALL_FAST_MODEL 等），
       # 不能靠人记得跑，放在出包前强制执行
       - name: Test
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --all-targets --locked
 
       # —————— 签名：有证书就签，没有就出未签名包 ——————
       # 未签名包只够自己测（要手动去掉隔离属性），不能发给用户。

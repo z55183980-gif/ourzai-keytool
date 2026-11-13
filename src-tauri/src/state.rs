@@ -139,7 +139,9 @@ pub fn forget_desktop_key() -> Result<()> {
 /// 桌面版里的密文是不是我们最近写的那把：是就返回密钥编号。
 /// 写入后第一次见到的密文认作那把密钥加密后的样子，并记下来。
 pub fn match_sealed_desktop_key(sealed: &str) -> Result<Option<String>> {
-    let Some(record) = load()?.claude_desktop_key else {
+    let _guard = STATE_LOCK.lock().map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
+    let mut st = load_inner()?;
+    let Some(record) = st.claude_desktop_key.as_mut() else {
         return Ok(None);
     };
     let Some(key) = load_profile_key(&record.profile_id)? else {
@@ -149,16 +151,13 @@ pub fn match_sealed_desktop_key(sealed: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     match record.sealed.as_deref() {
-        Some(s) if s == sealed => Ok(Some(record.profile_id)),
+        Some(s) if s == sealed => Ok(Some(record.profile_id.clone())),
         Some(_) => Ok(None),
         None => {
-            let sealed = sealed.to_string();
-            update(|st| {
-                if let Some(r) = st.claude_desktop_key.as_mut() {
-                    r.sealed = Some(sealed);
-                }
-            })?;
-            Ok(Some(record.profile_id))
+            record.sealed = Some(sealed.to_string());
+            let id = record.profile_id.clone();
+            save(&st)?;
+            Ok(Some(id))
         }
     }
 }
@@ -390,9 +389,57 @@ pub fn match_profile(live_key: Option<&str>) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// A key alone is not a service identity. Prefer the requested profile only when
+/// both its endpoint and credential match the configuration being inspected.
+pub fn match_profile_for(live_key: Option<&str>, base: Option<&str>, codex: bool, gateway: &str, preferred: Option<&str>) -> Result<Option<String>> {
+    match_profile_in(&load()?.profiles, live_key, base, codex, gateway, preferred, load_profile_key)
+}
+
+fn match_profile_in(profiles: &[Profile], live: Option<&str>, base: Option<&str>, codex: bool, gateway: &str, preferred: Option<&str>, key: impl Fn(&str) -> Result<Option<String>>) -> Result<Option<String>> {
+    let Some(live) = live.map(str::trim).filter(|k| !k.is_empty()) else { return Ok(None) };
+    let Some(base) = base else { return Ok(None) };
+    let candidates = profiles.iter().filter(|p| Some(p.id.as_str()) == preferred)
+        .chain(profiles.iter().filter(|p| Some(p.id.as_str()) != preferred));
+    for p in candidates {
+        let endpoint = if codex { p.openai_base(gateway) } else { p.anthropic_base(gateway) };
+        if endpoint.as_deref().is_some_and(|u| u.trim_end_matches('/') == base.trim_end_matches('/'))
+            && key(&p.id)?.as_deref() == Some(live) {
+            return Ok(Some(p.id.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// 界面上只显示掩码，永远不回显完整 key
+pub fn mask(key: &str) -> String {
+    let n = key.chars().count();
+    if n <= 8 {
+        return "•".repeat(n.max(4));
+    }
+    let head: String = key.chars().take(3).collect();
+    let tail: String = key.chars().skip(n - 4).collect();
+    format!("{}{}{}", head, "•".repeat(8), tail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_keys_match_requested_profile_only_at_its_own_endpoint() {
+        let gateway = "https://api.ourzai.com/v1";
+        let profiles = vec![
+            Profile { id: "first".into(), codex_base_url: "https://a.example/v1".into(), ..Default::default() },
+            Profile { id: "second".into(), codex_base_url: "https://a.example/v1".into(), ..Default::default() },
+            Profile { id: "other-service".into(), codex_base_url: "https://b.example/v1".into(), ..Default::default() },
+        ];
+        let match_at = |url, preferred| match_profile_in(&profiles, Some("same-key"), Some(url), true, gateway, preferred, |_| Ok(Some("same-key".into()))).unwrap();
+        assert_eq!(match_at("https://a.example/v1/", Some("second")).as_deref(), Some("second"));
+        assert_eq!(match_at("https://a.example/v1", Some("other-service")).as_deref(), Some("first"));
+        assert_eq!(match_at("https://b.example/v1", Some("second")).as_deref(), Some("other-service"));
+        assert_eq!(match_at(gateway, Some("second")), None);
+        assert_eq!(match_profile_in(&profiles, Some("wrong-key"), Some("https://a.example/v1"), true, gateway, Some("second"), |_| Ok(Some("same-key".into()))).unwrap(), None);
+    }
 
     #[test]
     fn zai_keys_use_the_gateway_and_custom_keys_their_own_urls() {
@@ -532,15 +579,4 @@ mod tests {
         let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
         assert_eq!(next_default_name(&list), format!("{prefix} 1"));
     }
-}
-
-/// 界面上只显示掩码，永远不回显完整 key
-pub fn mask(key: &str) -> String {
-    let n = key.chars().count();
-    if n <= 8 {
-        return "•".repeat(n.max(4));
-    }
-    let head: String = key.chars().take(3).collect();
-    let tail: String = key.chars().skip(n - 4).collect();
-    format!("{}{}{}", head, "•".repeat(8), tail)
 }

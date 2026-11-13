@@ -14,6 +14,7 @@ pub mod gateway;
 pub mod health;
 pub mod launcher;
 pub mod paths;
+pub mod process;
 pub mod state;
 pub mod ui_lang;
 

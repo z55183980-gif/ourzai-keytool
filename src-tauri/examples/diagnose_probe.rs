@@ -121,7 +121,7 @@ async fn probe() {
                 }
                 Err(e) => println!("[安装] 失败：{}", e),
             }
-            match commands::scan_environment(Some(base.clone()), None) {
+            match commands::scan_environment_blocking(Some(base.clone()), None, None) {
                 Ok(env) => {
                     let v = serde_json::to_value(&env).unwrap();
                     for tool in ["claude", "codex"] {

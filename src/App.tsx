@@ -530,6 +530,7 @@ export default function App() {
       await api.saveProfile({
         id, name: p.name, apiKey: "",
         codexModel: p.codexModel, codexEffort: p.codexEffort || "medium", claudeModel: p.claudeModel,
+        codexBaseUrl: p.codexBaseUrl, claudeBaseUrl: p.claudeBaseUrl,
         ...patch,
       });
       setProfiles(await api.listProfiles().catch(() => profiles));

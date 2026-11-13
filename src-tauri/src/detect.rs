@@ -75,6 +75,10 @@ pub fn scan(provider_id: &str, openai_base_url: &str) -> Result<Environment> {
 
 /// 只读用户同意过的那个工具的配置；另一个返回「未读取」占位，不碰它的文件。
 pub fn scan_selected(provider_id: &str, openai_base_url: &str, claude: bool, codex: bool) -> Result<Environment> {
+    scan_selected_for(provider_id, openai_base_url, claude, codex, None)
+}
+
+pub fn scan_selected_for(provider_id: &str, openai_base_url: &str, claude: bool, codex: bool, preferred: Option<&str>) -> Result<Environment> {
     // 指向 zAI 网关或任何一把其他服务密钥的地址，都要按密钥核对是不是本工具写的
     let (custom_codex, custom_claude) = crate::state::custom_base_urls().unwrap_or_default();
     let mut codex_urls = vec![openai_base_url.trim_end_matches('/').to_string()];
@@ -82,9 +86,9 @@ pub fn scan_selected(provider_id: &str, openai_base_url: &str, claude: bool, cod
     let mut claude_urls = vec![claude_config::derive_anthropic_base_url(openai_base_url)];
     claude_urls.extend(custom_claude);
     Ok(Environment {
-        codex: if codex { scan_codex(provider_id, &codex_urls)? } else { codex_not_read()? },
-        claude_desktop: if claude { scan_claude_desktop(&claude_urls)? } else { claude_desktop_not_read()? },
-        claude: if claude { scan_claude(&claude_urls)? } else { claude_not_read()? },
+        codex: if codex { scan_codex(provider_id, &codex_urls, openai_base_url, preferred)? } else { codex_not_read()? },
+        claude_desktop: if claude { scan_claude_desktop(&claude_urls, openai_base_url, preferred)? } else { claude_desktop_not_read()? },
+        claude: if claude { scan_claude(&claude_urls, openai_base_url, preferred)? } else { claude_not_read()? },
     })
 }
 
@@ -123,7 +127,7 @@ fn claude_not_read() -> Result<ClaudeEnv> {
     })
 }
 
-fn scan_codex(provider_id: &str, expected_url: &[String]) -> Result<CodexEnv> {
+fn scan_codex(provider_id: &str, expected_url: &[String], gateway: &str, preferred: Option<&str>) -> Result<CodexEnv> {
     let home = paths::codex_home()?;
     let home_exists = home.is_dir();
 
@@ -170,7 +174,7 @@ fn scan_codex(provider_id: &str, expected_url: &[String]) -> Result<CodexEnv> {
             "检测到当前进程的认证或服务地址环境变量；无法仅根据配置文件确认使用哪把密钥",
         );
     }
-    let active_profile_id = crate::state::match_profile(assessment.key.as_deref())?;
+    let active_profile_id = crate::state::match_profile_for(assessment.key.as_deref(), current_base_url.as_deref(), true, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
     let unsaved_gateway_key = assessment.key.as_deref().is_some_and(|k| !k.trim().is_empty()) && !managed_by_us;
     assessment.finish(managed_by_us);
@@ -206,7 +210,7 @@ fn scan_codex(provider_id: &str, expected_url: &[String]) -> Result<CodexEnv> {
     })
 }
 
-fn scan_claude(anthropic_base_url: &[String]) -> Result<ClaudeEnv> {
+fn scan_claude(anthropic_base_url: &[String], gateway: &str, preferred: Option<&str>) -> Result<ClaudeEnv> {
     let home = paths::claude_home()?;
     let home_exists = home.is_dir();
 
@@ -234,7 +238,7 @@ fn scan_claude(anthropic_base_url: &[String]) -> Result<ClaudeEnv> {
             "检测到当前进程的 Claude 认证或服务地址环境变量；无法仅根据配置文件确认使用哪把密钥",
         );
     }
-    let active_profile_id = crate::state::match_profile(assessment.key.as_deref())?;
+    let active_profile_id = crate::state::match_profile_for(assessment.key.as_deref(), current_base_url.as_deref(), false, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
     let unsaved_gateway_key = assessment.key.as_deref().is_some_and(|k| !k.trim().is_empty()) && !managed_by_us;
     assessment.finish(managed_by_us);
@@ -260,7 +264,7 @@ fn claude_desktop_not_read() -> Result<ClaudeEnv> {
     })
 }
 
-fn scan_claude_desktop(expected: &[String]) -> Result<ClaudeEnv> {
+fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&str>) -> Result<ClaudeEnv> {
     let home = claude_desktop::data_dir()?;
     let (path, text) = match claude_desktop::applied()? {
         claude_desktop::Applied::Config(path) => {
@@ -283,10 +287,12 @@ fn scan_claude_desktop(expected: &[String]) -> Result<ClaudeEnv> {
     let current = text.as_deref().and_then(claude_desktop::current);
     let mut assessment = assess_claude_desktop(text.as_deref(), expected);
     // 明文：直接按密钥对；密文：只能认「最近一次是我们写的那把」
-    let active_profile_id = match assessment.key.as_deref() {
-        Some(k) if claude_desktop::is_sealed(k) => crate::state::match_sealed_desktop_key(k)?,
-        k => crate::state::match_profile(k)?,
+    let key = match assessment.key.as_deref() {
+        Some(k) if claude_desktop::is_sealed(k) => crate::state::match_sealed_desktop_key(k)?
+            .map(|id| crate::state::load_profile_key(&id)).transpose()?.flatten(),
+        k => k.map(str::to_string),
     };
+    let active_profile_id = crate::state::match_profile_for(key.as_deref(), current.as_ref().and_then(|c| c.base_url.as_deref()), false, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
     let unsaved_gateway_key = assessment
         .key

@@ -84,11 +84,11 @@ fn restrict_permissions(path: &Path) -> Result<()> {
         use std::os::windows::process::CommandExt;
         let user = std::env::var("USERNAME")
             .map_err(|_| AppError::Io("无法确定当前用户，未写入密钥文件".into()))?;
-        let output = std::process::Command::new("icacls")
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let output = crate::process::output(std::process::Command::new(PathBuf::from(root).join("System32/icacls.exe"))
             .arg(path)
             .args(["/inheritance:r", "/grant:r", &format!("{}:F", user)])
-            .creation_flags(0x08000000)
-            .output()?;
+            .creation_flags(0x08000000), crate::process::HELPER_TIMEOUT)?;
         if !output.status.success() {
             return Err(AppError::Io("无法限制配置文件访问权限，未写入密钥".into()));
         }

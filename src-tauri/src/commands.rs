@@ -10,26 +10,43 @@ use crate::{api, backup, diagnose, health, paths, state};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
+pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| AppError::Other(e.to_string()))?
+}
+
 pub const PROVIDER_ID: &str = "starnexus";
 pub const DISPLAY_NAME: &str = "zAI";
 // Keep PROVIDER_ID stable so existing managed configs remain reversible.
 
 #[tauri::command]
-pub fn scan_environment(base_url: Option<String>, tools: Option<Vec<String>>) -> Result<Environment> {
+pub async fn scan_environment(base_url: Option<String>, tools: Option<Vec<String>>, preferred_profile_id: Option<String>) -> Result<Environment> {
+    blocking(move || scan_environment_blocking(base_url, tools, preferred_profile_id)).await
+}
+
+pub fn scan_environment_blocking(base_url: Option<String>, tools: Option<Vec<String>>, preferred_profile_id: Option<String>) -> Result<Environment> {
+    let _guard = backup::lock()?;
     let openai_base = base_url.unwrap_or_else(|| api::builtin_defaults().base_url);
     // tools：用户同意读取的工具；不传就两个都读（老版本前端、内部调用）
     let wants = |t: &str| tools.as_ref().is_none_or(|list| list.iter().any(|x| x == t));
-    detect::scan_selected(PROVIDER_ID, &openai_base, wants("claude"), wants("codex"))
+    detect::scan_selected_for(PROVIDER_ID, &openai_base, wants("claude"), wants("codex"), preferred_profile_id.as_deref())
 }
 
 #[tauri::command]
-pub fn load_app_state() -> Result<state::AppState> {
+pub async fn load_app_state() -> Result<state::AppState> {
+    blocking(load_app_state_blocking).await
+}
+
+pub fn load_app_state_blocking() -> Result<state::AppState> {
     state::load()
 }
 
 /// 界面切换语言：记下来（下次启动直接用），并同步窗口标题和托盘
 #[tauri::command]
-pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<()> {
+pub async fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<()> {
+    blocking(move || set_ui_language_blocking(app, lang)).await
+}
+
+pub fn set_ui_language_blocking(app: tauri::AppHandle, lang: String) -> Result<()> {
     let parsed = crate::ui_lang::parse(&lang).ok_or_else(|| AppError::Other("不支持的语言".into()))?;
     crate::ui_lang::set(parsed);
     state::update(|s| s.ui_lang = lang.clone())?;
@@ -39,7 +56,11 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<()> {
 
 /// 记下用户已同意读取本机配置：之后启动时直接读取，不再显示首次读取的遮罩
 #[tauri::command]
-pub fn mark_config_read(tool: String) -> Result<()> {
+pub async fn mark_config_read(tool: String) -> Result<()> {
+    blocking(move || mark_config_read_blocking(tool)).await
+}
+
+pub fn mark_config_read_blocking(tool: String) -> Result<()> {
     if tool != "claude" && tool != "codex" {
         return Err(AppError::Other("请先选择工具".into()));
     }
@@ -69,7 +90,11 @@ pub struct ProfileView {
 }
 
 #[tauri::command]
-pub fn list_profiles() -> Result<Vec<ProfileView>> {
+pub async fn list_profiles() -> Result<Vec<ProfileView>> {
+    blocking(list_profiles_blocking).await
+}
+
+pub fn list_profiles_blocking() -> Result<Vec<ProfileView>> {
     state::load()?
         .profiles
         .into_iter()
@@ -109,11 +134,11 @@ pub struct SaveProfileRequest {
     pub codex_effort: String,
     #[serde(default)]
     pub claude_model: String,
-    /// 其他服务的地址；都空就是 zAI 密钥
+    /// 缺省保留原地址；显式空字符串表示切回 zAI。
     #[serde(default)]
-    pub codex_base_url: String,
+    pub codex_base_url: Option<String>,
     #[serde(default)]
-    pub claude_base_url: String,
+    pub claude_base_url: Option<String>,
 }
 
 /// 其他服务的地址：只认 http(s)，去掉首尾空格和末尾斜杠
@@ -131,13 +156,17 @@ fn clean_base_url(raw: &str, tool: &str) -> Result<String> {
 }
 
 #[tauri::command]
-pub fn save_profile(req: SaveProfileRequest) -> Result<String> {
+pub async fn save_profile(req: SaveProfileRequest) -> Result<String> {
+    blocking(move || save_profile_blocking(req)).await
+}
+
+pub fn save_profile_blocking(req: SaveProfileRequest) -> Result<String> {
     let is_new = req.id.trim().is_empty();
     if is_new && req.api_key.trim().is_empty() {
         return Err(AppError::Other("请先填上 API Key".into()));
     }
-    let codex_base_url = clean_base_url(&req.codex_base_url, "Codex")?;
-    let claude_base_url = clean_base_url(&req.claude_base_url, "Claude Code")?;
+    let old = state::find_profile(&req.id)?.unwrap_or_default();
+    let (codex_base_url, claude_base_url) = profile_urls(&req, &old)?;
     // 手动填了新 Key 就断开与网关令牌的关联 —— 它已经不是那把了
     let manual_key = !req.api_key.trim().is_empty();
     let keep_link = if manual_key {
@@ -177,8 +206,73 @@ pub fn save_profile(req: SaveProfileRequest) -> Result<String> {
     Ok(state::upsert_profile(p, key)?.id)
 }
 
+fn profile_urls(req: &SaveProfileRequest, old: &state::Profile) -> Result<(String, String)> {
+    Ok((
+        clean_base_url(req.codex_base_url.as_deref().unwrap_or(&old.codex_base_url), "Codex")?,
+        clean_base_url(req.claude_base_url.as_deref().unwrap_or(&old.claude_base_url), "Claude Code")?,
+    ))
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn blocking_work_does_not_stall_async_executor() {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        runtime.block_on(async {
+            let worker = tokio::spawn(blocking(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|_| AppError::Other("async executor was blocked".into()))?;
+                Ok(())
+            }));
+            started_rx.await.unwrap();
+            assert!(!worker.is_finished(), "executor must progress while blocking work is pending");
+            release_tx.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn model_only_update_keeps_custom_endpoints_but_explicit_empty_clears_them() {
+        let old = state::Profile { codex_base_url: "https://relay.example/v1".into(), claude_base_url: "https://relay.example".into(), ..Default::default() };
+        let req: SaveProfileRequest = serde_json::from_str(r#"{"id":"custom","name":"relay","codexModel":"new-model"}"#).unwrap();
+        assert_eq!(profile_urls(&req, &old).unwrap(), (old.codex_base_url.clone(), old.claude_base_url.clone()));
+        let req: SaveProfileRequest = serde_json::from_str(r#"{"name":"relay","codexBaseUrl":"","claudeBaseUrl":""}"#).unwrap();
+        assert_eq!(profile_urls(&req, &old).unwrap(), (String::new(), String::new()));
+        let req: SaveProfileRequest = serde_json::from_str(r#"{"name":"relay","codexBaseUrl":"https://new.example/v1/"}"#).unwrap();
+        assert_eq!(profile_urls(&req, &old).unwrap(), ("https://new.example/v1".into(), old.claude_base_url));
+    }
+
+    #[test]
+    fn desktop_diagnosis_reads_only_desktop_config_and_redacts_its_key() {
+        let path = std::path::PathBuf::from("fixture-desktop.json");
+        let (files, auth) = diagnosis_files(health::Tool::Claude, Some(claude_desktop::Applied::Config(path.clone())), None, |p| {
+            assert_eq!(p, path);
+            Ok(Some(r#"{"inferenceGatewayApiKey":"opaque-desktop-secret","inferenceModels":["desktop-model"]}"#.into()))
+        }).unwrap();
+        assert!(auth.is_empty());
+        assert_eq!(files.len(), 1);
+        let body = files["claude-desktop.json"].as_str().unwrap();
+        assert!(body.contains("desktop-model"));
+        assert!(!body.contains("opaque-desktop-secret"));
+        assert_eq!(diagnosis_slot(health::Tool::Claude, true), "claudeDesktop");
+        assert_eq!(diagnosis_slot(health::Tool::Claude, false), "claude");
+        for applied in [claude_desktop::Applied::None, claude_desktop::Applied::Unusable("fixture".into())] {
+            diagnosis_files(health::Tool::Claude, Some(applied), None, |_| panic!("must not fall back to CLI settings")).unwrap();
+        }
+    }
+}
+
 #[tauri::command]
-pub fn delete_profile(id: String) -> Result<()> {
+pub async fn delete_profile(id: String) -> Result<()> {
+    blocking(move || delete_profile_blocking(id)).await
+}
+
+pub fn delete_profile_blocking(id: String) -> Result<()> {
     state::delete_profile(&id)
 }
 
@@ -492,12 +586,20 @@ pub async fn list_profile_models(
 }
 
 #[tauri::command]
-pub fn list_backups() -> Result<Vec<backup::BackupEntry>> {
+pub async fn list_backups() -> Result<Vec<backup::BackupEntry>> {
+    blocking(list_backups_blocking).await
+}
+
+pub fn list_backups_blocking() -> Result<Vec<backup::BackupEntry>> {
     backup::list()
 }
 
 #[tauri::command]
-pub fn restore_backup(id: String) -> Result<()> {
+pub async fn restore_backup(id: String) -> Result<()> {
+    blocking(move || restore_backup_blocking(id)).await
+}
+
+pub fn restore_backup_blocking(id: String) -> Result<()> {
     backup::restore(&id)
 }
 
@@ -550,7 +652,11 @@ pub struct ApplyResult {
 /// Codex 和 Claude Code 在同一个事务里写 —— 任何一个失败就全部还原，
 /// 不留"一半配好一半没配"的中间态。
 #[tauri::command]
-pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
+pub async fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
+    blocking(move || apply_config_blocking(req)).await
+}
+
+pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     let _guard = backup::lock()?;
     let mut out = ApplyResult::default();
 
@@ -795,7 +901,11 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
 
 /// 把两个工具都切回官方，并清掉我们写进去的密钥
 #[tauri::command]
-pub fn revert_to_official(codex: bool, claude: bool, claude_desktop: Option<bool>) -> Result<String> {
+pub async fn revert_to_official(codex: bool, claude: bool, claude_desktop: Option<bool>) -> Result<String> {
+    blocking(move || revert_to_official_blocking(codex, claude, claude_desktop)).await
+}
+
+pub fn revert_to_official_blocking(codex: bool, claude: bool, claude_desktop: Option<bool>) -> Result<String> {
     let claude_desktop = claude_desktop.unwrap_or(false);
     let _guard = backup::lock()?;
     if !codex && !claude && !claude_desktop {
@@ -855,7 +965,11 @@ pub fn revert_to_official(codex: bool, claude: bool, claude_desktop: Option<bool
 
 /// config.toml 坏到没法解析时的最后出路：备份后重建一份最小可用配置
 #[tauri::command]
-pub fn rebuild_minimal_config(req: ApplyRequest) -> Result<ApplyResult> {
+pub async fn rebuild_minimal_config(req: ApplyRequest) -> Result<ApplyResult> {
+    blocking(move || rebuild_minimal_config_blocking(req)).await
+}
+
+pub fn rebuild_minimal_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     if !req.configure_codex || req.configure_claude {
         return Err(AppError::Other("重建配置仅支持 Codex".into()));
     }
@@ -913,7 +1027,7 @@ fn codex_uses_external_auth_store(config: &str) -> bool {
 
 // ——————————— 体检 ———————————
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthRequest {
     pub tool: health::Tool,
@@ -1020,66 +1134,73 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
     let anthropic_base = claude_config::derive_anthropic_base_url(&openai_base);
     let service = service_kind(&req.service);
 
-    let (mut issues, current) = match req.tool {
-        Tool::Claude if req.claude_desktop() => match claude_desktop::applied()? {
-            claude_desktop::Applied::Config(path) => {
-                let text = read_text_optional(&path)?;
-                let restart_pending = service != Service::Official
-                    && text
-                        .as_deref()
-                        .and_then(claude_desktop::current)
-                        .and_then(|c| c.api_key)
-                        .is_some_and(|k| !claude_desktop::is_sealed(&k))
-                    && claude_desktop::running();
+    let local_req = req.clone();
+    let local_base = openai_base.clone();
+    let (mut issues, current, profile, selected_key) = blocking(move || {
+        let _guard = backup::lock()?;
+        let req = &local_req;
+        let openai_base = local_base;
+        let result = match req.tool {
+            Tool::Claude if req.claude_desktop() => match claude_desktop::applied()? {
+                claude_desktop::Applied::Config(path) => {
+                    let text = read_text_optional(&path)?;
+                    let restart_pending = service != Service::Official
+                        && text
+                            .as_deref()
+                            .and_then(claude_desktop::current)
+                            .and_then(|c| c.api_key)
+                            .is_some_and(|k| !claude_desktop::is_sealed(&k))
+                        && claude_desktop::running();
+                    (
+                        health::check_claude_desktop(text.as_deref(), &anthropic_base, service, restart_pending),
+                        health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed| {
+                            state::match_sealed_desktop_key(sealed)
+                                .ok()
+                                .flatten()
+                                .and_then(|id| state::load_profile_key(&id).ok().flatten())
+                        }),
+                    )
+                }
+                claude_desktop::Applied::None => (Vec::new(), None),
+                claude_desktop::Applied::Unusable(reason) => (
+                    vec![health::Issue {
+                        id: "D5",
+                        level: health::Level::Warn,
+                        text: reason,
+                        fix: health::Fix::None,
+                    }],
+                    None,
+                ),
+            },
+            Tool::Claude => {
+                let text = read_text_optional(&paths::claude_settings_path()?)?;
                 (
-                    health::check_claude_desktop(text.as_deref(), &anthropic_base, service, restart_pending),
-                    health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed| {
-                        state::match_sealed_desktop_key(sealed)
-                            .ok()
-                            .flatten()
-                            .and_then(|id| state::load_profile_key(&id).ok().flatten())
-                    }),
+                    health::check_claude(text.as_deref(), &anthropic_base, service),
+                    health::current_claude(text.as_deref(), &anthropic_base),
                 )
             }
-            claude_desktop::Applied::None => (Vec::new(), None),
-            claude_desktop::Applied::Unusable(reason) => (
-                vec![health::Issue {
-                    id: "D5",
-                    level: health::Level::Warn,
-                    text: reason,
-                    fix: health::Fix::None,
-                }],
-                None,
-            ),
-        },
-        Tool::Claude => {
-            let text = read_text_optional(&paths::claude_settings_path()?)?;
-            (
-                health::check_claude(text.as_deref(), &anthropic_base, service),
-                health::current_claude(text.as_deref(), &anthropic_base),
-            )
-        }
-        Tool::Codex => {
-            let text = read_text_optional(&paths::config_path()?)?;
-            let auth = read_text_optional(&paths::auth_path()?)?;
-            (
-                health::check_codex(text.as_deref(), &openai_base, service),
-                health::current_codex(text.as_deref(), auth.as_deref(), &openai_base, PROVIDER_ID),
-            )
-        }
-    };
+            Tool::Codex => {
+                let text = read_text_optional(&paths::config_path()?)?;
+                let auth = read_text_optional(&paths::auth_path()?)?;
+                (
+                    health::check_codex(text.as_deref(), &openai_base, service),
+                    health::current_codex(text.as_deref(), auth.as_deref(), &openai_base, PROVIDER_ID),
+                )
+            }
+        };
+        let profile = if service == Service::Zai { state::find_profile(&req.service)? } else { None };
+        let key = if service == Service::Zai { state::load_profile_key(&req.service)? } else { None };
+        Ok((result.0, result.1, profile, key))
+    }).await?;
 
     // 测哪把密钥、对照哪些模型：选了 zAI 密钥就是它和启动时会写入的模型；
     // 沿用当前配置就是配置文件里实际在用的那把（只在指向网关时）。密钥都不经过前端。
     // 选的是其他服务的密钥：配置规则照常查（别名等 zAI 专属的规则只在指向网关时才报），
     // 连接只测 Codex 地址的 /models；Claude 那边各家接口不一，不替它测
-    let custom = match service {
-        Service::Zai => state::find_profile(&req.service)?.filter(|p| p.is_custom()),
-        _ => None,
-    };
+    let custom = profile.filter(|p| p.is_custom());
     if let Some(p) = custom {
         if req.tool == Tool::Codex {
-            if let (Some(base), Some(key)) = (p.openai_base(&openai_base), state::load_profile_key(&p.id)?) {
+            if let (Some(base), Some(key)) = (p.openai_base(&openai_base), selected_key) {
                 let conn = connection_for(&key, &base, req.ignore_proxy, cache).await;
                 issues.extend(health::check_connection(&conn, &req.model));
             }
@@ -1091,7 +1212,7 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
     }
 
     let target = match service {
-        Service::Zai => state::load_profile_key(&req.service)?.map(|key| health::CurrentSetup {
+        Service::Zai => selected_key.map(|key| health::CurrentSetup {
             key,
             model: req.model.clone(),
             aliases: vec![
@@ -1267,17 +1388,64 @@ pub async fn ai_diagnose(
     prepare_diagnosis(&req, &cache).await?.send().await
 }
 
+fn diagnosis_files(
+    tool: health::Tool,
+    desktop: Option<claude_desktop::Applied>,
+    home: Option<&str>,
+    mut read: impl FnMut(&std::path::Path) -> Result<Option<String>>,
+) -> Result<(serde_json::Map<String, serde_json::Value>, Vec<String>)> {
+    let mut files = serde_json::Map::new();
+    let mut auth_fields = Vec::new();
+    match (tool, desktop) {
+        (health::Tool::Claude, Some(applied)) => match applied {
+            claude_desktop::Applied::Config(path) => {
+                if let Some(text) = read(&path)? {
+                    files.insert("claude-desktop.json".into(), diagnose::redact_claude_settings(&text, home).into());
+                }
+            }
+            claude_desktop::Applied::None => {},
+            claude_desktop::Applied::Unusable(_) => {
+                files.insert("claude-desktop.json".into(), "[桌面配置不可用]".into());
+            }
+        },
+        (health::Tool::Claude, None) => {
+            if let Some(text) = read(&paths::claude_settings_path()?)? {
+                files.insert("settings.json".into(), diagnose::redact_claude_settings(&text, home).into());
+            }
+        }
+        (health::Tool::Codex, _) => {
+            if let Some(text) = read(&paths::config_path()?)? {
+                files.insert("config.toml".into(), diagnose::redact_codex_config(&text, home).into());
+            }
+            auth_fields = diagnose::auth_fields(read(&paths::auth_path()?)?.as_deref());
+        }
+    }
+    Ok((files, auth_fields))
+}
+
+fn diagnosis_slot(tool: health::Tool, desktop: bool) -> &'static str {
+    match tool {
+        health::Tool::Claude if desktop => "claudeDesktop",
+        health::Tool::Claude => "claude",
+        health::Tool::Codex => "codex",
+    }
+}
+
 pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Result<PreparedDiagnosis> {
     use health::Tool;
     // AI 诊断只允许走 zAI 网关。其他渠道的模型目录和接口协议不受本工具控制，
     // 即使能连通也不能保证使用配置中的诊断模型；在任何体检或网络请求前直接拒绝。
-    let payer = state::find_profile(&req.profile_id)?
-        .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
-    if payer.is_custom() {
-        return Err(AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()));
-    }
-    let key = state::load_profile_key(&req.profile_id)?
-        .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
+    let profile_id = req.profile_id.clone();
+    let key = blocking(move || {
+        let payer = state::find_profile(&profile_id)?
+            .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
+        if payer.is_custom() {
+            return Err(AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()));
+        }
+        let key = state::load_profile_key(&profile_id)?
+            .ok_or_else(|| AppError::Other("AI 诊断需要 zAI Key，请选择或导入一把 zAI Key".into()))?;
+        Ok(key)
+    }).await?;
 
     let issues = run_health(&req.health, cache).await?;
     // 诊断用的是 profile_id 那把 zAI 密钥。被体检的正是它、而它连不上或无效时，诊断也发不出去；
@@ -1286,34 +1454,27 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
         return Err(AppError::Other("先处理密钥或网络问题，才能让 zAI 帮你看看".into()));
     }
     let openai_base = req.health.base_url.trim_end_matches('/').to_string();
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
+    let desktop = req.health.claude_desktop();
+    let tool = req.health.tool;
+    let base = openai_base.clone();
+    let (files, auth_fields, scan, home) = blocking(move || {
+        let _guard = backup::lock()?;
+        let home = dirs::home_dir().map(|h| h.to_string_lossy().to_string());
+        let applied = if desktop { Some(claude_desktop::applied()?) } else { None };
+        let (files, auth_fields) = diagnosis_files(tool, applied, home.as_deref(), read_text_optional)?;
+        let scan = detect::scan_selected(PROVIDER_ID, &base, tool == Tool::Claude, tool == Tool::Codex)
+            .ok()
+            .and_then(|env| serde_json::to_value(env).ok())
+            .and_then(|env| env.get(diagnosis_slot(tool, desktop)).cloned())
+            .unwrap_or(serde_json::Value::Null);
+        Ok((files, auth_fields, scan, home))
+    }).await?;
     let home = home.as_deref();
-
-    let mut files = serde_json::Map::new();
-    let mut auth_fields = Vec::new();
-    let (tool_name, env_vars) = match req.health.tool {
-        Tool::Claude => {
-            if let Some(t) = read_text_optional(&paths::claude_settings_path()?)? {
-                files.insert("settings.json".into(), diagnose::redact_claude_settings(&t, home).into());
-            }
-            ("claude", health::CLAUDE_ENV_VARS)
-        }
-        Tool::Codex => {
-            if let Some(t) = read_text_optional(&paths::config_path()?)? {
-                files.insert("config.toml".into(), diagnose::redact_codex_config(&t, home).into());
-            }
-            auth_fields = diagnose::auth_fields(read_text_optional(&paths::auth_path()?)?.as_deref());
-            ("codex", health::CODEX_ENV_VARS)
-        }
+    let (tool_name, env_vars) = match tool {
+        Tool::Claude if desktop => ("claude", &[][..]),
+        Tool::Claude => ("claude", health::CLAUDE_ENV_VARS),
+        Tool::Codex => ("codex", health::CODEX_ENV_VARS),
     };
-    // 扫描结果本身不含密钥值，但含路径，统一在 user_message 里再脱敏一遍
-    let scan = detect::scan(PROVIDER_ID, &openai_base)
-        .ok()
-        .and_then(|env| match req.health.tool {
-            Tool::Claude => serde_json::to_value(env.claude).ok(),
-            Tool::Codex => serde_json::to_value(env.codex).ok(),
-        })
-        .unwrap_or(serde_json::Value::Null);
 
     let service = match service_kind(&req.health.service) {
         health::Service::Current => "current",

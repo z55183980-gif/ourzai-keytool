@@ -54,7 +54,7 @@ pub fn meta_path() -> Result<PathBuf> {
     Ok(library_dir()?.join("_meta.json"))
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     id.len() == 36
         && id
             .bytes()
@@ -278,10 +278,9 @@ pub fn running() -> bool {
         let script = "@(Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object { $_.Path -match '\\\\WindowsApps\\\\Claude_|\\\\AnthropicClaude\\\\|\\\\Programs\\\\Claude\\\\' }).Count";
         let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
         let ps = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        return std::process::Command::new(ps)
+        return crate::process::output(std::process::Command::new(ps)
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .creation_flags(0x08000000)
-            .output()
+            .creation_flags(0x08000000), crate::process::HELPER_TIMEOUT)
             .ok()
             .and_then(|o| {
                 String::from_utf8_lossy(&o.stdout)
@@ -293,9 +292,8 @@ pub fn running() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        return std::process::Command::new("/usr/bin/pgrep")
-            .args(["-f", "/Claude.app/Contents/MacOS/Claude"])
-            .output()
+        return crate::process::output(std::process::Command::new("/usr/bin/pgrep")
+            .args(["-f", "/Claude.app/Contents/MacOS/Claude"]), crate::process::HELPER_TIMEOUT)
             .is_ok_and(|o| o.status.success());
     }
     #[allow(unreachable_code)]

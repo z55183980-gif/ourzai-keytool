@@ -4,6 +4,7 @@
 //! 但避开了它两个已知 bug：
 //!   - issue #1790 / #1104：只写 BASE_URL + AUTH_TOKEN，漏了 ANTHROPIC_MODEL
 //!   - issue #2525：把 key 写进 apiKey 字段却留空 env.ANTHROPIC_AUTH_TOKEN，导致 401
+//!
 //! 我们把三个键一次写齐，且只合并不覆盖。
 
 use crate::error::{AppError, Result};

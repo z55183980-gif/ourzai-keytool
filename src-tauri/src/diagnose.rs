@@ -45,7 +45,7 @@ action 只能是下面之一：
 
 fn is_secret_key(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    ["key", "token", "secret", "password"]
+    ["key", "token", "secret", "password", "authorization", "credential", "cookie", "headers"]
         .iter()
         .any(|w| n.contains(w))
 }
@@ -87,7 +87,7 @@ pub fn redact_json(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (k, v) in map.iter_mut() {
-                if is_secret_key(k) && !v.is_object() && !v.is_array() {
+                if is_secret_key(k) {
                     *v = Value::String("***".into());
                 } else {
                     redact_json(v);
@@ -99,17 +99,39 @@ pub fn redact_json(value: &mut Value) {
     }
 }
 
-/// TOML 按行处理：`xxx_key = ...` 这类行的值换成 "***"
+const OMITTED_CONFIG: &str = "[配置无法解析，已省略原文以保护凭据]";
+
+/// Parse TOML before redacting, including inline tables and multiline values.
+/// Send a normalized JSON representation: comments and parser source excerpts must not leave the app.
 pub fn redact_toml(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.split_once('=') {
-            Some((k, _)) if !k.trim_start().starts_with('#') && is_secret_key(k.trim()) => {
-                format!("{}= \"***\"", k)
-            }
-            _ => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    fn value(v: &toml_edit::Value) -> Value {
+        if let Some(t) = v.as_inline_table() {
+            return Value::Object(t.iter().map(|(k, v)| (k.into(), value(v))).collect());
+        }
+        if let Some(a) = v.as_array() {
+            return Value::Array(a.iter().map(value).collect());
+        }
+        if let Some(s) = v.as_str() { return Value::String(s.into()); }
+        if let Some(b) = v.as_bool() { return b.into(); }
+        if let Some(n) = v.as_integer() { return n.into(); }
+        if let Some(n) = v.as_float() { return json!(n); }
+        Value::String(v.as_datetime().map(ToString::to_string).unwrap_or_default())
+    }
+    fn item(i: &toml_edit::Item) -> Value {
+        match i {
+            toml_edit::Item::Value(v) => value(v),
+            toml_edit::Item::Table(t) => table(t),
+            toml_edit::Item::ArrayOfTables(a) => Value::Array(a.iter().map(table).collect()),
+            toml_edit::Item::None => Value::Null,
+        }
+    }
+    fn table(t: &toml_edit::Table) -> Value {
+        Value::Object(t.iter().map(|(k, v)| (k.into(), item(v))).collect())
+    }
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return OMITTED_CONFIG.into() };
+    let mut v = table(doc.as_table());
+    redact_json(&mut v);
+    serde_json::to_string_pretty(&v).unwrap_or_default()
 }
 
 /// auth.json 只发字段名
@@ -133,14 +155,14 @@ fn clip(text: &str, max_bytes: usize) -> String {
     format!("{}\n…（已截断）", &text[..end])
 }
 
-/// Claude 的 settings.json：能解析就结构化脱敏，解析不了按文本脱敏（损坏本身就是线索）
+/// Never send unparseable JSON: a malformed credential may use any prefix.
 pub fn redact_claude_settings(text: &str, home: Option<&str>) -> String {
     let body = match serde_json::from_str::<Value>(text) {
         Ok(mut v) => {
             redact_json(&mut v);
             serde_json::to_string_pretty(&v).unwrap_or_default()
         }
-        Err(_) => text.to_string(),
+        Err(_) => OMITTED_CONFIG.to_string(),
     };
     clip(&redact_text(&body, home), MAX_FILE)
 }
@@ -172,6 +194,15 @@ pub fn user_message(ctx: &Context, home: Option<&str>) -> String {
         .iter()
         .map(|i| json!({ "id": i.id, "text": i.text }))
         .collect();
+    let mut scan = ctx.scan.clone();
+    // Parser errors can embed the original line, including a secret of any format.
+    if let Some(obj) = scan.as_object_mut() {
+        for field in ["configState", "settingsState"] {
+            if obj.get(field).is_some_and(Value::is_object) {
+                obj.insert(field.into(), json!({"broken": OMITTED_CONFIG}));
+            }
+        }
+    }
     let data = json!({
         "tool": ctx.tool,
         "mode": ctx.mode,
@@ -179,7 +210,7 @@ pub fn user_message(ctx: &Context, home: Option<&str>) -> String {
         "os": std::env::consts::OS,
         "appVersion": env!("CARGO_PKG_VERSION"),
         "healthIssues": issues,
-        "scan": ctx.scan,
+        "scan": scan,
         "files": ctx.files,
         "codexAuthJsonFields": ctx.auth_fields,
         "envVarsSet": ctx.env_vars_set,
@@ -392,21 +423,44 @@ mod tests {
     }
 
     #[test]
-    fn masks_secret_lines_in_toml() {
-        let t = "model = \"m\"\nexperimental_bearer_token = \"abc\"\n# api_key = old\nopenai_api_key=\"x\"";
-        let r = redact_toml(t);
-        assert!(r.contains("model = \"m\""));
-        assert!(r.contains("experimental_bearer_token = \"***\""));
-        assert!(r.contains("# api_key = old"));
-        assert!(r.contains("openai_api_key= \"***\""));
-        assert!(!r.contains("abc"));
+    fn structured_toml_redacts_inline_tables_multiline_values_and_comments() {
+        let text = r#"model = "safe-model"
+last_used = 1979-05-27T07:32:00Z # date-comment-secret
+experimental_bearer_token = """opaque-line-one
+opaque-line-two"""
+# password = comment-secret
+[mcp_servers.test]
+http_headers = { Authorization = "Bearer opaque-header" }
+[model_providers.test]
+auth = { credentials = ["opaque-array"] }
+"#;
+        let r = redact_toml(text);
+        for secret in ["opaque-line-one", "opaque-line-two", "comment-secret", "date-comment-secret", "opaque-header", "opaque-array"] {
+            assert!(!r.contains(secret), "leaked {secret}");
+        }
+        let v: Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(v["model"], "safe-model");
+        assert_eq!(v["mcp_servers"]["test"]["http_headers"], "***");
+        assert_eq!(v["experimental_bearer_token"], "***");
     }
 
     #[test]
-    fn broken_settings_still_redacted_as_text() {
-        let r = redact_claude_settings("{ \"env\": { \"T\": \"sk-secret\" ", None);
-        assert!(r.contains("sk-***"));
-        assert!(!r.contains("secret"));
+    fn malformed_configs_are_omitted_regardless_of_secret_format() {
+        for secret in ["sk-secret", "opaque-credential", "eyJ.jwt.fixture"] {
+            let json = format!(r#"{{"env":{{"ANTHROPIC_AUTH_TOKEN":"{secret}",}}}}"#);
+            assert_eq!(redact_claude_settings(&json, None), OMITTED_CONFIG);
+            let toml = format!("api_key = [\"{secret}\"");
+            assert_eq!(redact_toml(&toml), OMITTED_CONFIG);
+        }
+    }
+
+    #[test]
+    fn secret_containers_and_authorization_are_fully_redacted() {
+        let mut v = json!({"credentials": ["opaque"], "Authorization": "Bearer opaque",
+            "nested": {"password": {"value": "opaque"}}, "model": "safe"});
+        redact_json(&mut v);
+        assert!(!v.to_string().contains("opaque"));
+        assert_eq!(v["model"], "safe");
     }
 
     #[test]
@@ -423,11 +477,12 @@ mod tests {
         let issues = [crate::health::check_env(crate::health::Tool::Claude, |_| true).remove(0)];
         let ctx = Context {
             tool: "claude", mode: "cli", service: "zai", issues: &issues,
-            scan: json!({"currentBaseUrl": "https://api.ourzai.com", "stray": "sk-leaked"}),
+            scan: json!({"currentBaseUrl": "https://api.ourzai.com", "stray": "sk-leaked", "configState": {"broken": "api_key = opaque-parser-secret"}}),
             files, auth_fields: vec![], env_vars_set: vec!["ANTHROPIC_API_KEY"], note: "401 with sk-typed-by-user", lang: "en",
         };
         let msg = user_message(&ctx, None);
         assert!(!msg.contains("sk-live") && !msg.contains("sk-leaked") && !msg.contains("sk-typed"));
+        assert!(!msg.contains("opaque-parser-secret"));
         assert!(msg.contains("E1") && msg.contains("ANTHROPIC_API_KEY"));
     }
 

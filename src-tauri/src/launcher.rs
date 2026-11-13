@@ -90,12 +90,20 @@ pub fn load_preferences() -> Result<Preferences> {
     }
 }
 #[tauri::command]
-pub fn load_launcher_preferences() -> Result<Preferences> {
+pub async fn load_launcher_preferences() -> Result<Preferences> {
+    crate::commands::blocking(load_launcher_preferences_blocking).await
+}
+
+fn load_launcher_preferences_blocking() -> Result<Preferences> {
     load_preferences()
 }
 
 #[tauri::command]
-pub fn save_launcher_preferences(mut preferences: Preferences) -> Result<()> {
+pub async fn save_launcher_preferences(preferences: Preferences) -> Result<()> {
+    crate::commands::blocking(move || save_launcher_preferences_blocking(preferences)).await
+}
+
+fn save_launcher_preferences_blocking(mut preferences: Preferences) -> Result<()> {
     let _guard = PREFS_LOCK
         .lock()
         .map_err(|_| AppError::Other("启动偏好锁不可用".into()))?;
@@ -227,51 +235,52 @@ fn powershell() -> PathBuf {
     system_exe("System32/WindowsPowerShell/v1.0/powershell.exe")
 }
 
-// Only read the registered, exact product names; do not scan or run arbitrary shortcuts.
+// Match registered package identities as well as legacy product names. Display names
+// can change (OpenAI.Codex is labelled ChatGPT on current Windows installations).
+#[cfg(any(windows, test))]
+fn parse_packaged_apps(text: &str) -> BTreeMap<String, String> {
+    text.lines().filter_map(|line| {
+        let (name, id) = line.trim().split_once('|')?;
+        let (family, application) = id.split_once('!')?;
+        if family.is_empty() || application.is_empty()
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-!".contains(&b))
+            || application.contains('!') {
+            return None;
+        }
+        let product = if family.starts_with("OpenAI.Codex_") && application == "App" {
+            "codex"
+        } else if family.starts_with("Claude_") && application == "Claude" {
+            "claude"
+        } else if name.eq_ignore_ascii_case("Codex") {
+            "codex"
+        } else if name.eq_ignore_ascii_case("Claude") {
+            "claude"
+        } else {
+            return None;
+        };
+        Some((product.into(), id.into()))
+    }).collect()
+}
+
 #[cfg(windows)]
 fn packaged_apps() -> BTreeMap<String, String> {
-    use std::{
-        os::windows::process::CommandExt,
-        time::{Duration, Instant},
-    };
-    let script = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Get-StartApps | Where-Object { $_.Name -in @('Claude','Codex') -and $_.AppID -match '^[A-Za-z0-9._-]+![A-Za-z0-9._-]+$' } | ForEach-Object { $_.Name + '|' + $_.AppID }";
-    let Ok(mut child) = Command::new(powershell())
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(0x08000000)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return BTreeMap::new();
-    };
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() < Duration::from_secs(8) => {
-                std::thread::sleep(Duration::from_millis(40))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return BTreeMap::new();
-            }
-        }
-    }
-    child
-        .wait_with_output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| {
-                    l.trim()
-                        .split_once('|')
-                        .map(|(name, id)| (name.to_lowercase(), id.to_string()))
-                })
-                .collect()
-        })
+    let script = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Get-StartApps | Where-Object { $_.Name -in @('Claude','Codex') -or $_.AppID -match '^(OpenAI[.]Codex_|Claude_)' } | ForEach-Object { $_.Name + '|' + $_.AppID }";
+    crate::process::output(Command::new(powershell())
+        .args(["-NoProfile", "-NonInteractive", "-Command", script]), crate::process::HELPER_TIMEOUT)
+        .ok().filter(|o| o.status.success())
+        .map(|o| parse_packaged_apps(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default()
+}
+
+#[cfg(any(windows, test))]
+fn desktop_executable(local: &Path, target: Target) -> Option<PathBuf> {
+    let candidates = if target == Target::ClaudeDesktop {
+        vec![local.join("AnthropicClaude/claude.exe"), local.join("Programs/Claude/Claude.exe")]
+    } else {
+        // OpenAI/Codex/bin/<version>/codex.exe is the bundled CLI, not a desktop app.
+        vec![local.join("Programs/Codex/Codex.exe"), local.join("OpenAI/Codex/Codex.exe")]
+    };
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 fn custom_location(target: Target, path: &str) -> Result<Location> {
@@ -328,32 +337,7 @@ fn discover(
         }
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
             let local = PathBuf::from(local);
-            let mut candidates = if target == Target::ClaudeDesktop {
-                vec![
-                    local.join("AnthropicClaude/claude.exe"),
-                    local.join("Programs/Claude/Claude.exe"),
-                ]
-            } else {
-                vec![
-                    local.join("Programs/Codex/Codex.exe"),
-                    local.join("OpenAI/Codex/Codex.exe"),
-                ]
-            };
-            if target == Target::CodexDesktop {
-                // The desktop updater keeps versioned installations under OpenAI/Codex/bin.
-                let mut versions: Vec<_> = std::fs::read_dir(local.join("OpenAI/Codex/bin"))
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path().join("codex.exe"))
-                    .filter(|p| p.is_file())
-                    .collect();
-                versions.sort_by_key(|p| {
-                    std::cmp::Reverse(p.metadata().and_then(|m| m.modified()).ok())
-                });
-                candidates.extend(versions);
-            }
-            if let Some(path) = candidates.into_iter().find(|p| p.is_file()) {
+            if let Some(path) = desktop_executable(&local, target) {
                 return Ok(Some(Location::Executable(path)));
             }
         }
@@ -659,6 +643,26 @@ pub async fn launch_client(req: LaunchRequest) -> Result<LaunchReceipt> {
 mod tests {
     use super::*;
     #[test]
+    fn desktop_identity_survives_display_name_changes() {
+        let apps = parse_packaged_apps("ChatGPT|OpenAI.Codex_2p2nqsd0c76g0!App\nClaude|Claude_pzs8sxrjxfjjc!Claude\nOther|unrelated!App\nCodex|bad!App!extra\nCodex|bad/route!App");
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps["codex"], "OpenAI.Codex_2p2nqsd0c76g0!App");
+        assert_eq!(apps["claude"], "Claude_pzs8sxrjxfjjc!Claude");
+        assert_eq!(parse_packaged_apps("Codex|Legacy_123!App")["codex"], "Legacy_123!App");
+    }
+    #[test]
+    fn bundled_codex_cli_is_never_a_desktop_candidate() {
+        let fixture = atomic::tests::TestDir::new();
+        let local = fixture.0.as_path();
+        let cli = local.join("OpenAI/Codex/bin/version/codex.exe");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "CLI fixture").unwrap();
+        assert!(desktop_executable(local, Target::CodexDesktop).is_none());
+        let desktop = local.join("OpenAI/Codex/Codex.exe");
+        std::fs::write(&desktop, "desktop fixture").unwrap();
+        assert_eq!(desktop_executable(local, Target::CodexDesktop), Some(desktop));
+    }
+    #[test]
     fn rejects_missing_or_relative_directory() {
         assert!(working_directory(".").is_err());
         assert!(working_directory(
@@ -758,7 +762,7 @@ mod tests {
             .decode(args.last().unwrap())
             .unwrap();
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
             .collect();
         let bootstrap = String::from_utf16(&units).unwrap();

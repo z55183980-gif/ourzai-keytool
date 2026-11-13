@@ -43,10 +43,10 @@ export const launchClient = (req: LaunchRequest): Promise<{ message: string }> =
   ? Promise.resolve({ message: "预览模式：未启动真实程序" }) : invoke("launch_client", { req });
 
 /** 读取本机配置。tools：用户同意读取的工具，另一个返回「未读取」占位 */
-export const scanEnvironment = (baseUrl?: string, tools?: ToolId[]): Promise<Environment> =>
+export const scanEnvironment = (baseUrl?: string, tools?: ToolId[], preferredProfileId?: string): Promise<Environment> =>
   DEV && S
     ? Promise.resolve(mock.mockEnvFor(S, tools))
-    : invoke<Environment>("scan_environment", { baseUrl: baseUrl ?? null, tools: tools ?? null });
+    : invoke<Environment>("scan_environment", { baseUrl: baseUrl ?? null, tools: tools ?? null, preferredProfileId: preferredProfileId ?? null });
 
 export const loadAppState = (): Promise<AppState> =>
   DEV && S ? Promise.resolve(mock.mockState()) : invoke<AppState>("load_app_state");
