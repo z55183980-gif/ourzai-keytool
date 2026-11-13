@@ -8,7 +8,7 @@ pub struct ProviderConfig {
     pub provider_id: String,
     pub display_name: String,
     pub base_url: String,
-    /// "responses" —— 已确认 starnexus 网关提供 /v1/responses
+    /// "responses" —— zAI API 提供 /v1/responses
     pub wire_api: String,
     pub model: String,
     pub reasoning_effort: String,

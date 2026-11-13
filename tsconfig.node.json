@@ -1,3 +1,4 @@
+// zAI Key Manager build configuration: Vite runs separately from the webview.
 {
   "compilerOptions": {
     "composite": true,
