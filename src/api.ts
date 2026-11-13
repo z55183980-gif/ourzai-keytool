@@ -154,7 +154,7 @@ export const rebuildMinimalConfig = (req: ApplyRequest): Promise<ApplyResult> =>
     ? Promise.resolve(mock.mockApply(req))
     : invoke<ApplyResult>("rebuild_minimal_config", { req });
 
-export const revertToOfficial = (codex: boolean, claude: boolean): Promise<string> =>
+export const revertToOfficial = (codex: boolean, claude: boolean, claudeDesktop = false): Promise<string> =>
   DEV && S
     ? Promise.resolve("20260918-183012")
-    : invoke<string>("revert_to_official", { codex, claude });
+    : invoke<string>("revert_to_official", { codex, claude, claudeDesktop });

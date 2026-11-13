@@ -3,6 +3,7 @@ pub mod atomic;
 pub mod backup;
 pub mod brand;
 pub mod claude_config;
+pub mod claude_desktop;
 pub mod codex_auth;
 pub mod codex_config;
 pub mod commands;

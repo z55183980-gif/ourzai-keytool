@@ -383,7 +383,7 @@ export default function App() {
   // —————— 启用 ——————
 
   /** 把一把密钥写进某个工具的用户配置（不启动客户端） */
-  const enable = async (profileId: string, tool: AppId, rebuild = false): Promise<boolean> => {
+  const enable = async (profileId: string, tool: AppId, rebuild = false, desktop = false): Promise<boolean> => {
     const p = profiles.find((x) => x.id === profileId);
     const claudeAliases = p?.custom
       ? { opus: "", sonnet: "", haiku: "" }
@@ -402,7 +402,9 @@ export default function App() {
         cleanupResidue: cleanup,
         overwriteOfficialAuth: overwriteAuth,
         conservative,
-        configureClaude: tool === "claude",
+        // Claude 桌面版和 CLI 是两份配置：体检里「修复」按当前启动方式写对应的那份
+        configureClaude: tool === "claude" && !desktop,
+        configureClaudeDesktop: tool === "claude" && desktop,
         claudeModel: modelFor("claude", p),
         claudeOpusModel: claudeAliases.opus,
         claudeSonnetModel: claudeAliases.sonnet,
@@ -482,24 +484,24 @@ export default function App() {
   }, [profiles, remote]);
 
   /** 体检：参数与启动时一致，密钥由后端自己从密钥库取 */
-  const checkHealth = (tool: ToolId, service: string) => {
+  const checkHealth = (tool: ToolId, service: string, mode: LaunchMode) => {
     const p = profiles.find(x => x.id === service);
     const model = p ? modelFor(tool, p) : "";
-    return api.healthCheck({ tool, service, model, baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
+    return api.healthCheck({ tool, mode, service, model, baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
   };
   const diagnose = (tool: ToolId, mode: LaunchMode, service: string, profileId: string, note: string) => {
     const p = profiles.find(x => x.id === service);
     const model = p ? modelFor(tool, p) : "";
     return api.aiDiagnose({ tool, mode, service, model, profileId, note, lang: getLang(), baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
   };
-  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings"): Promise<boolean> => {
+  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<boolean> => {
     if (fix === "rebuild" && tool !== "codex") {
       setToast({ kind: "err", text: t("重建配置仅支持 Codex") });
       return false;
     }
     if (fix === "keys") { setPage("keys"); return false; }
     if (fix === "settings") { setShowAdvanced(true); return false; }
-    if (profileId && !busy) return enable(profileId, tool, fix === "rebuild");
+    if (profileId && !busy) return enable(profileId, tool, fix === "rebuild", tool === "claude" && mode === "desktop");
     return false;
   };
 

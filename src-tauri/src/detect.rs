@@ -1,5 +1,6 @@
 use crate::atomic::read_text_optional;
 use crate::claude_config::{self, SettingsState};
+use crate::claude_desktop;
 use crate::codex_auth::{self, AuthState};
 use crate::codex_config;
 use crate::error::Result;
@@ -62,7 +63,10 @@ pub struct ClaudeEnv {
 #[serde(rename_all = "camelCase")]
 pub struct Environment {
     pub codex: CodexEnv,
+    /// Claude Code CLI（~/.claude/settings.json）
     pub claude: ClaudeEnv,
+    /// Claude 桌面版的第三方推理配置（它不读 settings.json）
+    pub claude_desktop: ClaudeEnv,
 }
 
 pub fn scan(provider_id: &str, openai_base_url: &str) -> Result<Environment> {
@@ -79,6 +83,7 @@ pub fn scan_selected(provider_id: &str, openai_base_url: &str, claude: bool, cod
     claude_urls.extend(custom_claude);
     Ok(Environment {
         codex: if codex { scan_codex(provider_id, &codex_urls)? } else { codex_not_read()? },
+        claude_desktop: if claude { scan_claude_desktop(&claude_urls)? } else { claude_desktop_not_read()? },
         claude: if claude { scan_claude(&claude_urls)? } else { claude_not_read()? },
     })
 }
@@ -246,6 +251,87 @@ fn scan_claude(anthropic_base_url: &[String]) -> Result<ClaudeEnv> {
         configuration_status: assessment.status,
         status_message: assessment.message,
     })
+}
+
+fn claude_desktop_not_read() -> Result<ClaudeEnv> {
+    Ok(ClaudeEnv {
+        home: claude_desktop::data_dir()?.to_string_lossy().to_string(),
+        ..claude_not_read()?
+    })
+}
+
+fn scan_claude_desktop(expected: &[String]) -> Result<ClaudeEnv> {
+    let home = claude_desktop::data_dir()?;
+    let (path, text) = match claude_desktop::applied()? {
+        claude_desktop::Applied::Config(path) => {
+            let text = read_text_optional(&path)?;
+            (Some(path), text)
+        }
+        claude_desktop::Applied::None => (None, None),
+        claude_desktop::Applied::Unusable(reason) => {
+            return Ok(ClaudeEnv {
+                home_exists: home.is_dir(),
+                home: home.to_string_lossy().to_string(),
+                settings_state: SettingsState::Ok,
+                configuration_status: ConfigurationStatus::Unknown,
+                status_message: reason,
+                ..claude_not_read()?
+            })
+        }
+    };
+    let settings_state = claude_desktop::inspect(text.as_deref());
+    let current = text.as_deref().and_then(claude_desktop::current);
+    let mut assessment = assess_claude_desktop(text.as_deref(), expected);
+    // 明文：直接按密钥对；密文：只能认「最近一次是我们写的那把」
+    let active_profile_id = match assessment.key.as_deref() {
+        Some(k) if claude_desktop::is_sealed(k) => crate::state::match_sealed_desktop_key(k)?,
+        k => crate::state::match_profile(k)?,
+    };
+    let managed_by_us = active_profile_id.is_some();
+    let unsaved_gateway_key = assessment
+        .key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty() && !claude_desktop::is_sealed(k))
+        && !managed_by_us;
+    if !managed_by_us && assessment.key.as_deref().is_some_and(claude_desktop::is_sealed) {
+        assessment.message =
+            "网关地址已配置，密钥已被 Claude 桌面版加密保存，无法确认是哪一把；启动时会重新写入所选密钥".into();
+    }
+    assessment.finish(managed_by_us);
+    Ok(ClaudeEnv {
+        home_exists: home.is_dir(),
+        home: path.unwrap_or(home).to_string_lossy().to_string(),
+        settings_state,
+        current_base_url: current.as_ref().and_then(|c| c.base_url.clone()),
+        current_model: current.and_then(|c| c.models.into_iter().next()),
+        managed_by_us,
+        active_profile_id,
+        unsaved_gateway_key,
+        configuration_status: assessment.status,
+        status_message: assessment.message,
+    })
+}
+
+fn assess_claude_desktop(text: Option<&str>, expected: &[String]) -> Assessment {
+    let Some(text) = text else {
+        return Assessment::new(ConfigurationStatus::Official, "未启用第三方推理，使用 Claude 官方登录");
+    };
+    let Some(c) = claude_desktop::current(text) else {
+        return Assessment::new(ConfigurationStatus::Broken, "配置文件格式损坏，未确认配置状态");
+    };
+    match c.provider.as_deref() {
+        None => Assessment::new(ConfigurationStatus::Official, "未启用第三方推理，使用 Claude 官方登录"),
+        Some("gateway") => {
+            if !c.base_url.as_deref().is_some_and(|u| any_url(u, expected)) {
+                return Assessment::new(ConfigurationStatus::Custom, "网关地址指向其他服务；未使用本工具的配置");
+            }
+            if c.other_credentials || c.credential_kind.as_deref().is_some_and(|k| k != "static") {
+                return Assessment::unknown("使用了静态 API Key 以外的凭据来源，未确认密钥");
+            }
+            Assessment::candidate(c.api_key)
+        }
+        Some(_) => Assessment::new(ConfigurationStatus::Custom, "使用其他第三方推理提供方；未使用本工具的配置"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

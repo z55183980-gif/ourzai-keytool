@@ -98,6 +98,69 @@ pub struct AppState {
     /// 界面语言（zh-CN / zh-HK / en）；空 = 跟随系统
     #[serde(default)]
     pub ui_lang: String,
+    /// 最近一次写进 Claude 桌面版的是哪把密钥。桌面版会把明文密钥加密保存，
+    /// 本工具解不开，只能靠这条记录认出「这段密文就是我们写的那把」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_desktop_key: Option<DesktopKeyRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopKeyRecord {
+    pub profile_id: String,
+    /// 写入时那把密钥的 SHA-256；密钥后来被换掉就不再算匹配
+    pub key_hash: String,
+    /// 第一次看到的密文；之后密文变了说明有人在桌面版里改过密钥
+    #[serde(default)]
+    pub sealed: Option<String>,
+}
+
+pub fn key_hash(key: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(key.trim().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+pub fn remember_desktop_key(profile_id: &str, key: &str) -> Result<()> {
+    let record = DesktopKeyRecord {
+        profile_id: profile_id.into(),
+        key_hash: key_hash(key),
+        sealed: None,
+    };
+    update(|st| st.claude_desktop_key = Some(record))
+}
+
+pub fn forget_desktop_key() -> Result<()> {
+    update(|st| st.claude_desktop_key = None)
+}
+
+/// 桌面版里的密文是不是我们最近写的那把：是就返回密钥编号。
+/// 写入后第一次见到的密文认作那把密钥加密后的样子，并记下来。
+pub fn match_sealed_desktop_key(sealed: &str) -> Result<Option<String>> {
+    let Some(record) = load()?.claude_desktop_key else {
+        return Ok(None);
+    };
+    let Some(key) = load_profile_key(&record.profile_id)? else {
+        return Ok(None);
+    };
+    if key_hash(&key) != record.key_hash {
+        return Ok(None);
+    }
+    match record.sealed.as_deref() {
+        Some(s) if s == sealed => Ok(Some(record.profile_id)),
+        Some(_) => Ok(None),
+        None => {
+            let sealed = sealed.to_string();
+            update(|st| {
+                if let Some(r) = st.claude_desktop_key.as_mut() {
+                    r.sealed = Some(sealed);
+                }
+            })?;
+            Ok(Some(record.profile_id))
+        }
+    }
 }
 
 pub fn load() -> Result<AppState> {

@@ -147,6 +147,71 @@ pub fn check_claude(text: Option<&str>, anthropic_base: &str, service: Service) 
     out
 }
 
+/// Claude 桌面版的第三方推理配置（它不读 settings.json，规则单独一套）。
+/// `restart_pending`：配置里还是明文密钥且桌面版正在运行 —— 桌面版启动时会把明文加密，
+/// 还是明文就说明写入后它没重新打开过，运行中的那个还在用旧配置。
+pub fn check_claude_desktop(
+    text: Option<&str>,
+    anthropic_base: &str,
+    service: Service,
+    restart_pending: bool,
+) -> Vec<Issue> {
+    let mut out = Vec::new();
+    let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
+        return out;
+    };
+    let Some(c) = crate::claude_desktop::current(text) else {
+        out.push(issue("D1", Level::Error, "Claude 桌面版配置文件格式损坏，需手动修复", Fix::None));
+        return out;
+    };
+    if service == Service::Official {
+        return out;
+    }
+    let on_gateway = c.provider.as_deref() == Some("gateway")
+        && c.base_url.as_deref().is_some_and(|b| host(b).is_some() && host(b) == host(anthropic_base));
+    if service == Service::Current && on_gateway {
+        if c.base_url.as_deref().is_some_and(|b| wrong_gateway_path(b, anthropic_base)) {
+            out.push(issue("D2", Level::Error, "Claude 桌面版服务地址不对", Fix::Rewrite));
+        }
+        if c.other_credentials || c.credential_kind.as_deref().is_some_and(|k| k != "static") {
+            out.push(issue("D3", Level::Warn, "Claude 桌面版用了其他认证方式，可能不生效", Fix::Rewrite));
+        }
+    }
+    if restart_pending {
+        out.push(issue(
+            "D4",
+            Level::Warn,
+            "Claude 桌面版还没重新打开，新配置尚未生效：请完全退出（包括托盘图标）后再打开",
+            Fix::None,
+        ));
+    }
+    out
+}
+
+/// Claude 桌面版当前在用的密钥与模型（只在指向网关时）。
+/// 密钥被桌面版加密后读不出原文，`resolve_sealed` 负责按本工具的写入记录认出是哪一把。
+pub fn current_claude_desktop(
+    text: Option<&str>,
+    anthropic_base: &str,
+    resolve_sealed: impl Fn(&str) -> Option<String>,
+) -> Option<CurrentSetup> {
+    let c = crate::claude_desktop::current(text?)?;
+    if c.provider.as_deref() != Some("gateway") {
+        return None;
+    }
+    let base = c.base_url.as_deref()?;
+    if host(base).is_none() || host(base) != host(anthropic_base) {
+        return None;
+    }
+    let raw = c.api_key?;
+    let key = if crate::claude_desktop::is_sealed(&raw) { resolve_sealed(&raw)? } else { raw };
+    Some(CurrentSetup {
+        key,
+        model: c.models.into_iter().next().unwrap_or_default(),
+        aliases: Vec::new(),
+    })
+}
+
 pub fn check_codex(text: Option<&str>, openai_base: &str, service: Service) -> Vec<Issue> {
     let mut out = Vec::new();
     let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
@@ -338,6 +403,40 @@ mod tests {
     }
 
     const FULL: &str = r#"{"ANTHROPIC_BASE_URL":"https://api.ourzai.com","ANTHROPIC_AUTH_TOKEN":"sk-x","ANTHROPIC_DEFAULT_OPUS_MODEL":"o","ANTHROPIC_DEFAULT_SONNET_MODEL":"s","ANTHROPIC_DEFAULT_HAIKU_MODEL":"h"}"#;
+
+    fn desktop(provider: &str, url: &str, extra: &str) -> String {
+        format!(r#"{{"inferenceProvider":"{provider}","inferenceGatewayBaseUrl":"{url}","inferenceGatewayApiKey":"sk-1"{extra}}}"#)
+    }
+
+    #[test]
+    fn desktop_rules() {
+        let ok = desktop("gateway", CLAUDE_BASE, r#","inferenceCredentialKind":"static""#);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, false).is_empty());
+        assert!(check_claude_desktop(None, CLAUDE_BASE, Service::Current, false).is_empty());
+        assert_eq!(ids(&check_claude_desktop(Some("{x"), CLAUDE_BASE, Service::Zai, false)), ["D1"]);
+        let v1 = desktop("gateway", "https://api.ourzai.com/v1", "");
+        assert_eq!(ids(&check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Current, false)), ["D2"]);
+        // 选了 zAI 密钥时启动会重写，地址问题不提前报
+        assert!(check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Zai, false).is_empty());
+        let helper = desktop("gateway", CLAUDE_BASE, r#","inferenceCredentialHelper":"x""#);
+        assert_eq!(ids(&check_claude_desktop(Some(&helper), CLAUDE_BASE, Service::Current, false)), ["D3"]);
+        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, true)), ["D4"]);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, true).is_empty());
+    }
+
+    #[test]
+    fn reads_current_desktop_setup() {
+        let plain = desktop("gateway", CLAUDE_BASE, r#","inferenceModels":["m1","m2"]"#);
+        let c = current_claude_desktop(Some(&plain), CLAUDE_BASE, |_| None).unwrap();
+        assert_eq!((c.key.as_str(), c.model.as_str()), ("sk-1", "m1"));
+        let sealed = r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://api.ourzai.com","inferenceGatewayApiKey":"__sealed__:v1:AA"}"#;
+        assert!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_| None).is_none());
+        assert_eq!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_| Some("sk-w".into())).unwrap().key, "sk-w");
+        let other = desktop("gateway", "https://relay.example", "");
+        assert!(current_claude_desktop(Some(&other), CLAUDE_BASE, |_| Some("x".into())).is_none());
+        let bedrock = desktop("bedrock", CLAUDE_BASE, "");
+        assert!(current_claude_desktop(Some(&bedrock), CLAUDE_BASE, |_| None).is_none());
+    }
 
     #[test]
     fn healthy_claude_has_no_issues() {

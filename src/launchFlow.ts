@@ -4,13 +4,14 @@ interface Dependencies {
   validateLaunch: (req: LaunchRequest) => Promise<void>;
   scanEnvironment: (baseUrl: string) => Promise<Environment>;
   applyConfig: (req: ApplyRequest) => Promise<ApplyResult>;
-  revertToOfficial: (codex: boolean, claude: boolean) => Promise<string>;
+  revertToOfficial: (codex: boolean, claude: boolean, claudeDesktop: boolean) => Promise<string>;
   launchClient: (req: LaunchRequest) => Promise<{ message: string }>;
 }
 
 /**
  * Validate installation/directory before touching configuration; never launch after a failed write.
- * Desktop and CLI share the same user-level configuration, so both go through the same write path.
+ * Codex desktop and CLI share ~/.codex. Claude does not: the CLI reads ~/.claude/settings.json while
+ * Claude desktop reads its own third-party inference config, so each mode writes and checks its own file.
  * The one exception: desktop + "current" just opens the app without inspecting anything.
  */
 export async function launchWithConfiguration(
@@ -23,27 +24,35 @@ export async function launchWithConfiguration(
   await dependencies.validateLaunch(req);
   if (mode === "desktop" && service === "current") return dependencies.launchClient(req);
 
-  const env = await dependencies.scanEnvironment(applyRequest.baseUrl);
-  const current = env[tool];
+  const claudeDesktop = tool === "claude" && mode === "desktop";
+  const slot = claudeDesktop ? "claudeDesktop" : tool;
+  const request: ApplyRequest = {
+    ...applyRequest,
+    configureCodex: tool === "codex",
+    configureClaude: tool === "claude" && !claudeDesktop,
+    configureClaudeDesktop: claudeDesktop,
+  };
+  const env = await dependencies.scanEnvironment(request.baseUrl);
+  const current = env[slot];
   if (current.configurationStatus === "broken") throw new Error("配置文件需要修复，请到密钥页查看详情后再启动");
   if (service === "current") return dependencies.launchClient(req);
 
   if (service === "official") {
     if (!["official", "unconfigured"].includes(current.configurationStatus)) {
-      const backupId = await dependencies.revertToOfficial(tool === "codex", tool === "claude");
-      if (backupId) onConfigured({ backupId, paths: [], warnings: [], wroteCodexConfig: tool === "codex", wroteCodexAuth: false, wroteClaudeSettings: tool === "claude" });
+      const backupId = await dependencies.revertToOfficial(tool === "codex", request.configureClaude, claudeDesktop);
+      if (backupId) onConfigured({ backupId, paths: [], warnings: [], wroteCodexConfig: tool === "codex", wroteCodexAuth: false, wroteClaudeSettings: request.configureClaude, wroteClaudeDesktop: claudeDesktop });
     }
-    const verified = (await dependencies.scanEnvironment(applyRequest.baseUrl))[tool];
+    const verified = (await dependencies.scanEnvironment(request.baseUrl))[slot];
     if (!["official", "unconfigured"].includes(verified.configurationStatus)) throw new Error("仍检测到自定义服务或外部认证覆盖，已停止启动。请检查配置详情，或明确选择沿用当前配置。");
   } else {
-    const expectedModel = tool === "codex" ? applyRequest.model : applyRequest.claudeModel;
+    const expectedModel = tool === "codex" ? request.model : request.claudeModel;
     const matches = current.configurationStatus === "configured" && current.activeProfileId === service
       // Custom Claude services may intentionally omit a model; detect reports that as null.
       && (current.currentModel ?? "") === expectedModel
-      && (tool !== "codex" || env.codex.currentReasoningEffort === applyRequest.reasoningEffort);
+      && (tool !== "codex" || env.codex.currentReasoningEffort === request.reasoningEffort);
     if (!matches) {
-      onConfigured(await dependencies.applyConfig(applyRequest));
-      const verified = (await dependencies.scanEnvironment(applyRequest.baseUrl))[tool];
+      onConfigured(await dependencies.applyConfig(request));
+      const verified = (await dependencies.scanEnvironment(request.baseUrl))[slot];
       if (verified.configurationStatus !== "configured" || verified.activeProfileId !== service) {
         throw new Error("配置已写入，但仍有外部配置或认证覆盖，已停止启动。请查看配置详情；本次修改可撤销。");
       }

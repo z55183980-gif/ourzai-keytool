@@ -116,7 +116,10 @@ export interface ClaudeEnv {
 
 export interface Environment {
   codex: CodexEnv;
+  /** Claude Code CLI：~/.claude/settings.json */
   claude: ClaudeEnv;
+  /** Claude 桌面版：它自己的第三方推理配置（不读 settings.json） */
+  claudeDesktop: ClaudeEnv;
 }
 
 export interface RemoteConfig {
@@ -146,6 +149,7 @@ export interface BackupEntry {
   has_config: boolean;
   has_auth: boolean;
   has_claude: boolean;
+  has_claude_desktop?: boolean;
 }
 
 export interface AppState {
@@ -177,6 +181,8 @@ export interface ApplyRequest {
   claudeOpusModel: string;
   claudeSonnetModel: string;
   claudeHaikuModel: string;
+  /** 写 Claude 桌面版自己的第三方推理配置（和 configureClaude 写的 CLI 配置是两份） */
+  configureClaudeDesktop?: boolean;
 }
 
 export interface ApplyResult {
@@ -184,6 +190,7 @@ export interface ApplyResult {
   wroteCodexConfig: boolean;
   wroteCodexAuth: boolean;
   wroteClaudeSettings: boolean;
+  wroteClaudeDesktop?: boolean;
   paths: string[];
   warnings: string[];
 }
@@ -191,9 +198,10 @@ export interface ApplyResult {
 /** 体检（health_check）的问题行；fix 只会是已有的动作 */
 export type HealthFix = "rewrite" | "rebuild" | "keys" | "settings" | "model" | "none";
 export interface HealthIssue { id: string; level: "error" | "warn"; text: string; fix: HealthFix }
-export interface HealthRequest { tool: ToolId; service: string; model: string; baseUrl: string; ignoreProxy: boolean; opusModel: string; sonnetModel: string; haikuModel: string }
+/** mode：Claude 桌面版与 CLI 读两份配置，体检按启动方式分开查 */
+export interface HealthRequest { tool: ToolId; service: string; model: string; baseUrl: string; ignoreProxy: boolean; opusModel: string; sonnetModel: string; haikuModel: string; mode: LaunchMode }
 /** AI 诊断：一次请求一张卡片；action 只是推荐已有的按钮 */
-export interface DiagnoseRequest extends HealthRequest { mode: LaunchMode; profileId: string; note: string; /** 界面语言，zAI 按它回答 */ lang: string }
+export interface DiagnoseRequest extends HealthRequest { profileId: string; note: string; /** 界面语言，zAI 按它回答 */ lang: string }
 /** 把配置文件里正在用的 zAI 密钥收进密钥列表的结果 */
 export interface AdoptResult { id: string; name: string; existed: boolean }
 

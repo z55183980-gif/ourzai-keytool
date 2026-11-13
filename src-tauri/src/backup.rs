@@ -22,6 +22,7 @@ pub struct BackupEntry {
     pub has_config: bool,
     pub has_auth: bool,
     pub has_claude: bool,
+    pub has_claude_desktop: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,6 +53,24 @@ fn targets(codex: bool, claude: bool) -> Result<Vec<(String, PathBuf)>> {
     Ok(files)
 }
 
+const DESKTOP_CONFIG: &str = "claude-desktop.json";
+const DESKTOP_META: &str = "claude-desktop-meta.json";
+
+/// Claude 桌面版：配置库索引 + 当前选中的那份配置（配置库还没建时只有索引）
+fn desktop_targets() -> Result<Vec<(String, PathBuf)>> {
+    let mut files = vec![(DESKTOP_META.into(), crate::claude_desktop::meta_path()?)];
+    if let crate::claude_desktop::Applied::Config(path) = crate::claude_desktop::applied()? {
+        files.push((DESKTOP_CONFIG.into(), path));
+    }
+    Ok(files)
+}
+
+fn all_targets() -> Result<Vec<(String, PathBuf)>> {
+    let mut files = targets(true, true)?;
+    files.extend(desktop_targets()?);
+    Ok(files)
+}
+
 pub fn create() -> Result<String> {
     create_scoped(true, true)
 }
@@ -61,10 +80,20 @@ pub fn create_scoped(codex: bool, claude: bool) -> Result<String> {
 }
 
 pub fn create_for_paths(changed: &[PathBuf]) -> Result<String> {
-    let files = targets(true, true)?
+    let mut files = all_targets()?
         .into_iter()
         .filter(|(_, path)| changed.contains(path))
         .collect::<Vec<_>>();
+    // 桌面版的配置库是这次才新建的：新配置文件还不在索引里，按所在目录认
+    let library = crate::claude_desktop::library_dir()?;
+    for path in changed {
+        if !files.iter().any(|(_, p)| p == path)
+            && path.parent() == Some(library.as_path())
+            && !files.iter().any(|(n, _)| n == DESKTOP_CONFIG)
+        {
+            files.push((DESKTOP_CONFIG.into(), path.clone()));
+        }
+    }
     create_at(&paths::backup_root()?, &files)
 }
 
@@ -137,6 +166,7 @@ pub fn list() -> Result<Vec<BackupEntry>> {
             has_config: p.join("config.toml").exists(),
             has_auth: p.join("auth.json").exists(),
             has_claude: p.join("claude-settings.json").exists(),
+            has_claude_desktop: p.join(DESKTOP_CONFIG).exists(),
         });
     }
     out.sort_by(|a, b| b.id.cmp(&a.id));
@@ -145,7 +175,7 @@ pub fn list() -> Result<Vec<BackupEntry>> {
 
 pub fn restore(id: &str) -> Result<()> {
     let _guard = lock()?;
-    restore_at(&paths::backup_root()?, id, &targets(true, true)?)
+    restore_at(&paths::backup_root()?, id, &all_targets()?)
 }
 
 fn restore_at(root: &Path, id: &str, allowed: &[(String, PathBuf)]) -> Result<()> {

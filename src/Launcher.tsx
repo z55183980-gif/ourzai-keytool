@@ -65,8 +65,8 @@ export function Launcher(props: {
   onSettings: () => void;
   onAdvanced: () => void;
   onRefresh: () => Promise<void>;
-  checkHealth: (tool: ToolId, service: string) => Promise<HealthIssue[]>;
-  onFix: (tool: ToolId, profileId: string | null, fix: Exclude<HealthFix, "none" | "model">) => Promise<boolean> | boolean;
+  checkHealth: (tool: ToolId, service: string, mode: LaunchMode) => Promise<HealthIssue[]>;
+  onFix: (tool: ToolId, profileId: string | null, fix: Exclude<HealthFix, "none" | "model">, mode: LaunchMode) => Promise<boolean> | boolean;
   diagnose: (tool: ToolId, mode: LaunchMode, service: string, profileId: string, note: string) => Promise<Diagnosis>;
   onAlerts: (alerts: ToolAlerts) => void;
   /** 在浏览器打开开发者控制台 */
@@ -145,6 +145,13 @@ export function Launcher(props: {
   }, []);
   /** 这个工具的配置是否已同意读取 */
   const consented = (tool: ToolId) => !!props.configRead?.[tool];
+  /** 当前启动方式实际读的那份配置：Claude 桌面版读它自己的第三方推理配置，不读 settings.json */
+  const desktopClaude = prefs?.claudeMode === "desktop";
+  const modeOf = (tool: ToolId): LaunchMode => prefs?.[`${tool}Mode`] ?? "cli";
+  /** 体检、日志里的名字：Claude 分桌面版和 Claude Code（两份配置）；Codex 两种启动共用一份配置 */
+  const healthName = (tool: ToolId) => tool === "claude" ? (desktopClaude ? t("{name} 桌面版", { name: TOOLS.claude.name }) : TOOLS.claude.cli) : TOOLS[tool].name;
+  const cfg = (tool: ToolId, env: Environment | null | undefined = props.env) =>
+    tool === "claude" && desktopClaude ? env?.claudeDesktop : env?.[tool];
   const readTools = TOOL_IDS.filter(consented);
   // 已经同意过读取（老用户或之前点过）：启动时自动读取安装情况和环境变量，并写一段「检测本机环境」
   useEffect(() => {
@@ -157,7 +164,7 @@ export function Launcher(props: {
 
   /** 当前配置对得上列表里的哪一项：某把 zAI 密钥或官方服务；对不上（自定义、待确认、损坏、未配置）返回 null */
   const matchedService = (tool: ToolId): string | null => {
-    const config = props.env?.[tool];
+    const config = cfg(tool);
     if (!config) return null;
     if (config.configurationStatus === "official") return "official";
     if (config.configurationStatus === "configured") return props.profiles.find(p => p.id === config.activeProfileId && p.hasKey)?.id ?? null;
@@ -181,12 +188,12 @@ export function Launcher(props: {
     let cancelled = false;
     // 只体检同意读取过的工具
     for (const tool of TOOL_IDS.filter(consented)) {
-      props.checkHealth(tool, tool === "claude" ? claudeService : codexService)
+      props.checkHealth(tool, tool === "claude" ? claudeService : codexService, modeOf(tool))
         .then(r => { if (!cancelled) setHealth(h => ({ ...h, [tool]: r })); })
         .catch(() => { if (!cancelled) setHealth(h => ({ ...h, [tool]: h[tool] ?? undefined })); });
     }
     return () => { cancelled = true; };
-  }, [!!prefs, readTools.join(), claudeService, codexService, props.env, props.catalogKey]);
+  }, [!!prefs, readTools.join(), claudeService, codexService, desktopClaude, props.env, props.catalogKey]);
   const { onAlerts } = props;
   useEffect(() => {
     const level = (issues: HealthIssue[] | null | undefined) =>
@@ -247,7 +254,7 @@ export function Launcher(props: {
   /** 一个工具当前选的服务，以及修复、AI 诊断各用哪把密钥 */
   const ctxFor = (tool: ToolId) => {
     const service = serviceFor(tool);
-    const config = props.env?.[tool];
+    const config = cfg(tool);
     const activeProfile = props.profiles.find(p => p.id === config?.activeProfileId);
     const selected = props.profiles.find(p => p.id === service);
     // 修复要用一把 zAI 密钥写入：优先所选的，其次当前配置正在用的；选了官方服务时不提供写入
@@ -265,8 +272,7 @@ export function Launcher(props: {
     props.onPage(tool);
   };
   /** 当前配置的一句话说明；对不上本工具里的密钥时说清楚「未保存在本工具」 */
-  const configText = (tool: ToolId, env: Environment | null = props.env) => {
-    const config = env?.[tool];
+  const describe = (config: Environment[keyof Environment] | undefined) => {
     if (!config) return t("读取中");
     if (config.unsavedGatewayKey) return t("zAI 密钥（未保存在本工具）");
     if (config.configurationStatus === "configured") {
@@ -276,7 +282,8 @@ export function Launcher(props: {
     return t(({ official: "官方服务", unconfigured: "尚未配置", custom: "自定义服务", unknown: "实际服务待确认", broken: "配置文件损坏" } as const)[config.configurationStatus]);
   };
   /** 配置里有 zAI 密钥，但没保存在本工具：可以一键收进密钥列表 */
-  const adoptable = (tool: ToolId) => !!props.env?.[tool].unsavedGatewayKey;
+  // 收进密钥列表只认 CLI 的 settings.json；桌面版的密钥不从这里收
+  const adoptable = (tool: ToolId) => !(tool === "claude" && desktopClaude) && !!props.env?.[tool].unsavedGatewayKey;
   /** 只属于某个工具的环境变量 */
   const varsOf = (tools: ToolId[], names: string[]) =>
     names.filter(n => (tools.includes("claude") && /^(ANTHROPIC|CLAUDE)_/.test(n)) || (tools.includes("codex") && /^(OPENAI|CODEX)_/.test(n)));
@@ -292,9 +299,12 @@ export function Launcher(props: {
     }
     for (const tool of readTools) {
       const config = props.env[tool];
-      const actions = adoptable(tool) ? [{ label: t("收进密钥列表"), run: () => props.onAdopt(tool) }] : [];
+      const actions = config.unsavedGatewayKey ? [{ label: t("收进密钥列表"), run: () => props.onAdopt(tool) }] : [];
       props.log(config.configurationStatus === "broken" ? "err" : "info",
-        t("{tool} 配置：{state}", { tool: TOOLS[tool].name, state: configText(tool) }) + (config.currentModel ? ` · ${config.currentModel}` : ""), { group, batch, actions });
+        t("{tool} 配置：{state}", { tool: tool === "claude" ? TOOLS.claude.cli : TOOLS[tool].name, state: describe(config) }) + (config.currentModel ? ` · ${config.currentModel}` : ""), { group, batch, actions });
+      const desktop = props.env.claudeDesktop;
+      if (tool === "claude" && desktop) props.log(desktop.configurationStatus === "broken" ? "err" : "info",
+        t("{tool} 配置：{state}", { tool: t("{name} 桌面版", { name: TOOLS.claude.name }), state: describe(desktop) }) + (desktop.currentModel ? ` · ${desktop.currentModel}` : ""), { group, batch });
     }
     const vars = varsOf(readTools, overrides);
     if (vars.length) props.log("warn", t("环境变量 {names} 已设置，会覆盖配置文件", { names: vars.join(t("、")) }), { group, batch });
@@ -329,7 +339,10 @@ export function Launcher(props: {
         const path = `${config.home}${config.home.includes("\\") ? "\\" : "/"}${file}`;
         const actions = config.unsavedGatewayKey ? [{ label: t("收进密钥列表"), run: () => props.onAdopt(tool) }] : [];
         props.log(config.configurationStatus === "broken" ? "err" : "ok",
-          t("读取 {path}", { path }) + ` · ${configText(tool, env)}` + (config.currentModel ? ` · ${config.currentModel}` : ""), { group, batch, actions });
+          t("读取 {path}", { path }) + ` · ${describe(config)}` + (config.currentModel ? ` · ${config.currentModel}` : ""), { group, batch, actions });
+        const desktop = env.claudeDesktop;
+        if (tool === "claude" && desktop) props.log(desktop.configurationStatus === "broken" ? "err" : "ok",
+          t("读取 {path}", { path: desktop.home }) + ` · ${describe(desktop)}` + (desktop.currentModel ? ` · ${desktop.currentModel}` : ""), { group, batch });
       }
       const all = await api.envOverrides().catch(() => [] as string[]);
       setOverrides(all);
@@ -353,8 +366,8 @@ export function Launcher(props: {
     if (fix === "rebuild" && tool !== "codex") return null;
     switch (fix) {
       case "none": return null;
-      case "keys": return { label: t("管理密钥"), run: () => props.onFix(tool, null, "keys") };
-      case "settings": return { label: t("去设置"), run: () => props.onFix(tool, null, "settings") };
+      case "keys": return { label: t("管理密钥"), run: () => props.onFix(tool, null, "keys", modeOf(tool)) };
+      case "settings": return { label: t("去设置"), run: () => props.onFix(tool, null, "settings", modeOf(tool)) };
       case "model": {
         const sel = c.selected;
         return sel?.hasKey ? { label: t("换模型"), run: () => onToolPage(tool, () => openModel(tool, sel)) } : pickKey;
@@ -365,7 +378,7 @@ export function Launcher(props: {
         return {
           label: fix === "rebuild" ? t("重建配置") : t("修复"),
           run: async () => {
-            const applied = await props.onFix(tool, id, fix);
+            const applied = await props.onFix(tool, id, fix, modeOf(tool));
             if (opts.verifyAfterWrite && applied && (fix === "rewrite" || fix === "rebuild")) {
               await verifyAfterFix(tool, id);
             }
@@ -377,7 +390,7 @@ export function Launcher(props: {
   /** 把一个工具的体检结果写进输出 */
   const reportHealth = (tool: ToolId, issues: HealthIssue[], title?: string) => {
     const group = `health-${tool}`, batch = props.nextBatch();
-    props.log("cmd", (title ?? t("体检 {tool}", { tool: TOOLS[tool].name })) + ` · ${ctxFor(tool).serviceLabel}`, { group, batch });
+    props.log("cmd", (title ?? t("体检 {tool}", { tool: healthName(tool) })) + ` · ${ctxFor(tool).serviceLabel}`, { group, batch });
     if (!issues.length) props.log("ok", t("未发现问题"), { group, batch });
     for (const issue of issues) {
       const actions = [
@@ -390,10 +403,10 @@ export function Launcher(props: {
   /** AI 写入成功后立即复检，避免只看到“已写入”而不知道实际是否生效。 */
   const verifyAfterFix = async (tool: ToolId, service: string) => {
     try {
-      const issues = await props.checkHealth(tool, service);
-      lastHealth.current[tool] = `${service}|${issues.map(i => i.id).join(",")}`;
+      const issues = await props.checkHealth(tool, service, modeOf(tool));
+      lastHealth.current[tool] = `${service}|${modeOf(tool)}|${issues.map(i => i.id).join(",")}`;
       setHealth(h => ({ ...h, [tool]: issues }));
-      reportHealth(tool, issues, t("修复后体检 {tool}", { tool: TOOLS[tool].name }));
+      reportHealth(tool, issues, t("修复后体检 {tool}", { tool: healthName(tool) }));
     } catch (e) {
       props.log("err", t("修复后体检失败：{error}", { error: String(e).replace(/^Error:\s*/, "") }));
     }
@@ -405,7 +418,7 @@ export function Launcher(props: {
     for (const tool of TOOL_IDS) {
       const issues = health[tool];
       if (!issues) continue;
-      const sig = `${serviceFor(tool)}|${issues.map(i => i.id).join(",")}`;
+      const sig = `${serviceFor(tool)}|${modeOf(tool)}|${issues.map(i => i.id).join(",")}`;
       if (lastHealth.current[tool] === sig) continue;
       lastHealth.current[tool] = sig;
       reportHealth(tool, issues);
@@ -438,7 +451,7 @@ export function Launcher(props: {
     const service = serviceFor(tool);
     const target: LaunchTarget = `${tool}-${mode}`;
     const installed = scan?.installations.find(i => i.target === target);
-    const config = props.env?.[tool];
+    const config = cfg(tool);
     const invalidService = !["current", "official"].includes(service) && !props.profiles.some(p => p.id === service && p.hasKey && supportsTool(p, tool));
     // 桌面版 +「保持现有配置」只是打开程序，不读不写；其余组合都要经过配置检查与写入（已是当前配置时会跳过写入）
     const passthrough = mode === "desktop" && service === "current";

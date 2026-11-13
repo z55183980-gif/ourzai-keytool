@@ -1,5 +1,6 @@
 use crate::atomic::{read_text_optional, TwoFileTxn};
 use crate::claude_config::{self, ClaudeSettings, SettingsState};
+use crate::claude_desktop;
 use crate::codex_auth::{self, AuthState};
 use crate::codex_config::{self, AuthMode, ProviderConfig};
 use crate::detect::{self, Environment};
@@ -526,6 +527,10 @@ pub struct ApplyRequest {
     pub claude_opus_model: String,
     pub claude_sonnet_model: String,
     pub claude_haiku_model: String,
+
+    // —— Claude 桌面版（第三方推理配置，和 CLI 的 settings.json 是两份）——
+    #[serde(default)]
+    pub configure_claude_desktop: bool,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -535,6 +540,7 @@ pub struct ApplyResult {
     pub wrote_codex_config: bool,
     pub wrote_codex_auth: bool,
     pub wrote_claude_settings: bool,
+    pub wrote_claude_desktop: bool,
     pub paths: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -550,7 +556,7 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
 
     let api_key = state::load_profile_key(&req.profile_id)?
         .ok_or_else(|| AppError::Other("这一条还没填 API Key".into()))?;
-    if !req.configure_codex && !req.configure_claude {
+    if !req.configure_codex && !req.configure_claude && !req.configure_claude_desktop {
         return Err(AppError::Other("请先选择要配置哪个工具".into()));
     }
 
@@ -563,7 +569,7 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
     } else {
         String::new()
     };
-    let anthropic_base = if req.configure_claude {
+    let anthropic_base = if req.configure_claude || req.configure_claude_desktop {
         profile
             .anthropic_base(&req.base_url)
             .ok_or_else(|| AppError::Other("这把密钥没有填 Claude Code 地址，不能给 Claude Code 用".into()))?
@@ -603,6 +609,20 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
             )));
         }
         Some(t)
+    } else {
+        None
+    };
+
+    let existing_desktop = if req.configure_claude_desktop {
+        let (path, new_meta) = claude_desktop::target_for_write()?;
+        let t = read_text_optional(&path)?;
+        if let SettingsState::Broken(e) = claude_desktop::inspect(t.as_deref()) {
+            return Err(AppError::JsonParse(format!(
+                "Claude 桌面版的配置文件有格式问题：{}。原文件没有被改动，请先修好它",
+                e
+            )));
+        }
+        Some((path, new_meta, t))
     } else {
         None
     };
@@ -717,8 +737,39 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
         out.paths.push(claude_path.to_string_lossy().to_string());
     }
 
-    out.backup_id = backup::create_for_paths(&txn.paths())?;
-    txn.commit()?;
+    // ——— Claude 桌面版 ———
+    if let Some((path, new_meta, existing)) = existing_desktop {
+        let models = claude_desktop::model_list(&[
+            &req.claude_model,
+            &req.claude_opus_model,
+            &req.claude_sonnet_model,
+            &req.claude_haiku_model,
+        ]);
+        let merged = claude_desktop::merge(existing.as_deref(), &anthropic_base, &api_key, &models)?;
+        if existing.as_deref() != Some(merged.as_str()) {
+            txn.write(&path, &merged)?;
+            if let Some(meta) = new_meta {
+                txn.write(&claude_desktop::meta_path()?, &meta)?;
+            }
+            out.wrote_claude_desktop = true;
+            out.paths.push(path.to_string_lossy().to_string());
+            if claude_desktop::running() {
+                out.warnings.push(
+                    "Claude 桌面版正在运行，它不会重读配置：请完全退出（包括托盘图标）后重新打开，新配置才生效".into(),
+                );
+            }
+        }
+    }
+
+    if !txn.paths().is_empty() {
+        out.backup_id = backup::create_for_paths(&txn.paths())?;
+        txn.commit()?;
+    }
+    if req.configure_claude_desktop {
+        if let Err(e) = state::remember_desktop_key(&req.profile_id, &api_key) {
+            out.warnings.push(format!("配置已写入，但记录桌面版密钥失败：{}", e));
+        }
+    }
 
     // 模型偏好跟着密钥走，全局只记这几项
     if let Err(e) = state::update(|st| {
@@ -730,7 +781,7 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
                 prof.codex_model = req.model.clone();
                 prof.codex_effort = req.reasoning_effort.clone();
             }
-            if req.configure_claude {
+            if req.configure_claude || req.configure_claude_desktop {
                 prof.claude_model = req.claude_model.clone();
             }
         }
@@ -744,9 +795,10 @@ pub fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
 
 /// 把两个工具都切回官方，并清掉我们写进去的密钥
 #[tauri::command]
-pub fn revert_to_official(codex: bool, claude: bool) -> Result<String> {
+pub fn revert_to_official(codex: bool, claude: bool, claude_desktop: Option<bool>) -> Result<String> {
+    let claude_desktop = claude_desktop.unwrap_or(false);
     let _guard = backup::lock()?;
-    if !codex && !claude {
+    if !codex && !claude && !claude_desktop {
         return Err(AppError::Other("请先选择工具".into()));
     }
     let mut txn = TwoFileTxn::new();
@@ -782,11 +834,22 @@ pub fn revert_to_official(codex: bool, claude: bool) -> Result<String> {
         }
     }
 
+    if claude_desktop {
+        if let claude_desktop::Applied::Config(path) = claude_desktop::applied()? {
+            if let Some(reverted) = claude_desktop::revert(read_text_optional(&path)?.as_deref())? {
+                txn.write(&path, &reverted)?;
+            }
+        }
+    }
+
     if txn.paths().is_empty() {
         return Ok(String::new());
     }
     let backup_id = backup::create_for_paths(&txn.paths())?;
     txn.commit()?;
+    if claude_desktop {
+        let _ = state::forget_desktop_key();
+    }
     Ok(backup_id)
 }
 
@@ -869,6 +932,15 @@ pub struct HealthRequest {
     pub sonnet_model: String,
     #[serde(default)]
     pub haiku_model: String,
+    /// "desktop" | "cli"。Claude 桌面版和 CLI 读的是两份配置，体检分开查；Codex 两者共用一份
+    #[serde(default)]
+    pub mode: String,
+}
+
+impl HealthRequest {
+    fn claude_desktop(&self) -> bool {
+        self.tool == health::Tool::Claude && self.mode == "desktop"
+    }
 }
 
 /// 连接测试成功的结果按「密钥 + 地址 + 代理设置」缓存，App 关掉就清空。
@@ -949,6 +1021,37 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
     let service = service_kind(&req.service);
 
     let (mut issues, current) = match req.tool {
+        Tool::Claude if req.claude_desktop() => match claude_desktop::applied()? {
+            claude_desktop::Applied::Config(path) => {
+                let text = read_text_optional(&path)?;
+                let restart_pending = service != Service::Official
+                    && text
+                        .as_deref()
+                        .and_then(claude_desktop::current)
+                        .and_then(|c| c.api_key)
+                        .is_some_and(|k| !claude_desktop::is_sealed(&k))
+                    && claude_desktop::running();
+                (
+                    health::check_claude_desktop(text.as_deref(), &anthropic_base, service, restart_pending),
+                    health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed| {
+                        state::match_sealed_desktop_key(sealed)
+                            .ok()
+                            .flatten()
+                            .and_then(|id| state::load_profile_key(&id).ok().flatten())
+                    }),
+                )
+            }
+            claude_desktop::Applied::None => (Vec::new(), None),
+            claude_desktop::Applied::Unusable(reason) => (
+                vec![health::Issue {
+                    id: "D5",
+                    level: health::Level::Warn,
+                    text: reason,
+                    fix: health::Fix::None,
+                }],
+                None,
+            ),
+        },
         Tool::Claude => {
             let text = read_text_optional(&paths::claude_settings_path()?)?;
             (
@@ -981,7 +1084,9 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
                 issues.extend(health::check_connection(&conn, &req.model));
             }
         }
-        issues.extend(health::check_env(req.tool, env_is_set));
+        if !req.claude_desktop() {
+            issues.extend(health::check_env(req.tool, env_is_set));
+        }
         return Ok(issues);
     }
 
@@ -1013,7 +1118,10 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
         }
     }
 
-    issues.extend(health::check_env(req.tool, env_is_set));
+    // ANTHROPIC_* 等环境变量只影响 CLI；桌面版按自己的配置走
+    if !req.claude_desktop() {
+        issues.extend(health::check_env(req.tool, env_is_set));
+    }
     Ok(issues)
 }
 
@@ -1119,9 +1227,8 @@ pub async fn adopt_current_key(req: AdoptRequest) -> Result<AdoptResult> {
 #[serde(rename_all = "camelCase")]
 pub struct DiagnoseRequest {
     #[serde(flatten)]
+    /// 启动方式 mode 也在 health 里（和体检共用）
     pub health: HealthRequest,
-    /// "desktop" | "cli"
-    pub mode: String,
     /// 用哪把 zAI 密钥调模型（前端只从 zAI 密钥中选择）
     pub profile_id: String,
     /// 用户填的报错，可为空
@@ -1215,7 +1322,7 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
     };
     let ctx = diagnose::Context {
         tool: tool_name,
-        mode: &req.mode,
+        mode: &req.health.mode,
         service,
         issues: &issues,
         scan,

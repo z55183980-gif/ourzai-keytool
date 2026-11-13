@@ -4,7 +4,7 @@ import { launchWithConfiguration } from '../src/launchFlow.ts';
 
 const request = { profileId:'key-1', baseUrl:'https://api.ourzai.com/v1', model:'model', reasoningEffort:'medium', claudeModel:'claude-model' };
 const config = (status = 'official', id = null, currentModel = 'model') => ({ configurationStatus:status, activeProfileId:id, currentModel, currentReasoningEffort:'medium' });
-const environment = value => ({ codex:value, claude:value });
+const environment = value => ({ codex:value, claude:value, claudeDesktop:value });
 function fixture(states = [environment(config())]) {
   const calls = [], configured = [];
   const deps = {
@@ -65,16 +65,16 @@ test('spawn failure leaves the successful backup available for undo', async () =
 });
 
 function claudeFixture(states = [environment(config())], claudeModel = 'claude-model') {
-  const calls = [], configured = [];
+  const calls = [], configured = [], applied = [], reverted = [];
   const request = { profileId:'key-1', baseUrl:'https://api.ourzai.com/v1', model:'', reasoningEffort:'medium', claudeModel };
   const deps = {
     validateLaunch: async () => { calls.push('validate'); },
     scanEnvironment: async () => { calls.push('scan'); return states.length > 1 ? states.shift() : states[0]; },
-    applyConfig: async () => { calls.push('apply'); return { backupId:'backup-claude' }; },
-    revertToOfficial: async () => { calls.push('revert'); return 'backup-claude-official'; },
+    applyConfig: async req => { calls.push('apply'); applied.push(req); return { backupId:'backup-claude' }; },
+    revertToOfficial: async (...args) => { calls.push('revert'); reverted.push(args); return 'backup-claude-official'; },
     launchClient: async () => { calls.push('launch'); return { message:'requested' }; },
   };
-  return { calls, deps, configured, run:(service='current', mode='cli') => launchWithConfiguration('claude', mode, service, 'C:\\project', request, deps, r=>configured.push(r)) };
+  return { calls, deps, configured, applied, reverted, run:(service='current', mode='cli') => launchWithConfiguration('claude', mode, service, 'C:\\project', request, deps, r=>configured.push(r)) };
 }
 
 test('Claude desktop launch applies and verifies the selected key and URL', async () => {
@@ -88,4 +88,28 @@ test('Claude desktop custom service with no model does not rewrite every launch'
   const f=claudeFixture([environment(config('configured','key-1',null))], '');
   await f.run('key-1','desktop');
   assert.deepEqual(f.calls,['validate','scan','launch']);
+});
+
+test('Claude desktop is checked and written through its own config, not the CLI settings', async () => {
+  const cli = config('configured','key-1','claude-model'), desktop = config('official');
+  const f=claudeFixture([{ codex:cli, claude:cli, claudeDesktop:desktop }, { codex:cli, claude:cli, claudeDesktop:config('configured','key-1','claude-model') }]);
+  await f.run('key-1','desktop');
+  assert.deepEqual(f.calls,['validate','scan','apply','scan','launch']);
+  assert.equal(f.applied[0].configureClaudeDesktop, true);
+  assert.equal(f.applied[0].configureClaude, false);
+});
+
+test('Claude CLI writes settings.json only and ignores the desktop config', async () => {
+  const cli = config('official'), desktop = config('configured','key-1','claude-model');
+  const f=claudeFixture([{ codex:cli, claude:cli, claudeDesktop:desktop }, { codex:cli, claude:config('configured','key-1','claude-model'), claudeDesktop:desktop }]);
+  await f.run('key-1','cli');
+  assert.deepEqual(f.calls,['validate','scan','apply','scan','launch']);
+  assert.equal(f.applied[0].configureClaude, true);
+  assert.equal(f.applied[0].configureClaudeDesktop, false);
+});
+
+test('Claude desktop official service reverts only the desktop config', async () => {
+  const f=claudeFixture([environment(config('configured','key-1')),environment(config('official'))]);
+  await f.run('official','desktop');
+  assert.deepEqual(f.reverted[0],[false,false,true]);
 });

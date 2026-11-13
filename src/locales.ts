@@ -480,6 +480,23 @@ export const DICT: Record<string, [string, string]> = {
 
   "不支持的语言": ["不支援的語言", "Unsupported language"],
 
+  // —— Claude 桌面版的第三方推理配置 ——
+  "未启用第三方推理，使用 Claude 官方登录": ["未啟用第三方推理，使用 Claude 官方登入", "Third-party inference is off; Claude uses its own sign-in"],
+  "网关地址指向其他服务；未使用本工具的配置": ["閘道位址指向其他服務；未使用本工具的設定", "The gateway URL points to another service; this tool's config is not in use"],
+  "使用了静态 API Key 以外的凭据来源，未确认密钥": ["使用了靜態 API Key 以外的憑證來源，未確認密鑰", "A credential source other than a static API key is set; the key could not be confirmed"],
+  "使用其他第三方推理提供方；未使用本工具的配置": ["使用其他第三方推理供應商；未使用本工具的設定", "Another third-party inference provider is in use; this tool's config is not in use"],
+  "网关地址已配置，密钥已被 Claude 桌面版加密保存，无法确认是哪一把；启动时会重新写入所选密钥": ["閘道位址已設定，密鑰已由 Claude 桌面版加密儲存，無法確認是哪一把；啟動時會重新寫入所選密鑰", "The gateway URL is set, but Claude desktop has encrypted the key so it can't be identified; the selected key will be written again on launch"],
+  "Claude 桌面版正在运行，它不会重读配置：请完全退出（包括托盘图标）后重新打开，新配置才生效": ["Claude 桌面版正在執行，它不會重新讀取設定：請完全結束（包括系統匣圖示）後重新開啟，新設定才會生效", "Claude desktop is running and won't reload its config: quit it completely (including the tray icon) and reopen it for the new config to take effect"],
+  "Claude 桌面版的配置库索引（_meta.json）格式损坏": ["Claude 桌面版的設定庫索引（_meta.json）格式損壞", "Claude desktop's config index (_meta.json) is corrupted"],
+  "Claude 桌面版当前使用组织下发的配置，本工具不改它": ["Claude 桌面版目前使用機構下發的設定，本工具不會更改", "Claude desktop is using a configuration from your organization; this tool won't change it"],
+  "Claude 桌面版没有选中任何一份本地配置，请先在它的第三方推理设置里保存一次": ["Claude 桌面版沒有選用任何一份本機設定，請先在它的第三方推理設定中儲存一次", "Claude desktop has no local config selected. Save its third-party inference settings once first"],
+  "配置已写入，但记录桌面版密钥失败：{error}": ["設定已寫入，但記錄桌面版密鑰失敗：{error}", "Config written, but recording the desktop key failed: {error}"],
+
+  "Claude 桌面版配置文件格式损坏，需手动修复": ["Claude 桌面版設定檔格式損壞，須手動修復", "Claude desktop's config file is corrupted and needs a manual fix"],
+  "Claude 桌面版服务地址不对": ["Claude 桌面版服務位址不正確", "Claude desktop's service URL is wrong"],
+  "Claude 桌面版用了其他认证方式，可能不生效": ["Claude 桌面版使用了其他認證方式，可能不會生效", "Claude desktop uses another sign-in method; the key may not take effect"],
+  "Claude 桌面版还没重新打开，新配置尚未生效：请完全退出（包括托盘图标）后再打开": ["Claude 桌面版尚未重新開啟，新設定仍未生效：請完全結束（包括系統匣圖示）後再開啟", "Claude desktop hasn't been reopened, so the new config isn't active yet: quit it completely (including the tray icon) and reopen it"],
+
   // —— 预览用的模拟数据 ——
   "界面预览示例": ["介面預覽範例", "Preview sample"],
   "预览模式：未启动真实程序": ["預覽模式：未啟動真實程式", "Preview mode: no real app launched"],

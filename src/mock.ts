@@ -148,6 +148,12 @@ export function mockEnv(s: Scenario): Environment {
   const env: Environment = {
     codex: { ...base.codex, unsavedGatewayKey: base.codex.unsavedGatewayKey ?? false },
     claude: { ...base.claude, unsavedGatewayKey: base.claude.unsavedGatewayKey ?? false },
+    // 桌面版的第三方推理配置：演示里一律还没启用（用官方登录）
+    claudeDesktop: {
+      ...base.claude, home: "C:\Users\you\AppData\Local\Claude-3p", settingsState: "missing",
+      currentBaseUrl: null, currentModel: null, managedByUs: false, activeProfileId: null, unsavedGatewayKey: false,
+      configurationStatus: "official", statusMessage: "未启用第三方推理，使用 Claude 官方登录",
+    },
   };
   for (const tool of ["claude", "codex"] as const) {
     const id = adopted[tool];
@@ -327,6 +333,7 @@ export function mockApply(req: ApplyRequest): ApplyResult {
     wroteCodexConfig: req.configureCodex,
     wroteCodexAuth: req.configureCodex,
     wroteClaudeSettings: req.configureClaude,
+    wroteClaudeDesktop: !!req.configureClaudeDesktop,
     paths: [
       ...(req.configureCodex
         ? [`${HOME_CODEX}\\config.toml`, `${HOME_CODEX}\\auth.json`]
