@@ -593,6 +593,12 @@ fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
         .try_lock()
         .map_err(|_| AppError::Other("启动中，请稍候".into()))?;
     let mut cmd = prepare(&req)?;
+    // explorer.exe exits with 1 even after it has activated a packaged (MSIX/Store) app,
+    // and reports real activation failures in its own dialog, so its exit code means nothing.
+    #[cfg(windows)]
+    let exit_code_meaningful = cmd.get_program() != system_exe("explorer.exe").as_os_str();
+    #[cfg(not(windows))]
+    let exit_code_meaningful = true;
     // The Windows CLI bootstrap opens an interactive child and exits after dispatch.
     if !req.target.cli() {
         cmd.stdin(Stdio::null())
@@ -623,7 +629,7 @@ fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     if let Some(exit) = child.try_wait()? {
-        if !exit.success() {
+        if exit_code_meaningful && !exit.success() {
             return Err(AppError::Other(format!(
                 "启动程序已退出（{exit}），请检查程序路径或在终端中查看错误"
             )));
