@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
+// zAI Key Manager: local webview preview and Tauri frontend build.
 export default defineConfig(() => ({
   plugins: [react()],
 

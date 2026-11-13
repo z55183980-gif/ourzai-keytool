@@ -1,6 +1,9 @@
 {
-  "name": "dbkey",
+  "name": "ourzai-keytool",
   "private": true,
+  "description": "zAI Key Manager for Claude and Codex",
+  "repository": { "type": "git", "url": "https://github.com/z55183980-gif/ourzai-keytool.git" },
+  "homepage": "https://ourzai.com/tools/key-manager",
   "version": "0.2.6",
   "type": "module",
   "scripts": {

@@ -1,4 +1,4 @@
-name: Release
+name: zAI Key Manager Release
 
 # 打包在 GitHub 的机器上跑，因为 macOS 包只能由 macOS 出：
 # 编译要 Apple 的 SDK，打 DMG 要 hdiutil，签名要 codesign，都是 Mac 独有的。
@@ -27,6 +27,8 @@ concurrency:
 
 jobs:
   build:
+    # Release credentials and artifacts belong to this repository only.
+    if: github.repository == 'z55183980-gif/ourzai-keytool'
     runs-on: ${{ matrix.os }}
     strategy:
       # 一个平台挂了，另一个照常出包，便于定位问题
