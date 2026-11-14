@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
+import { runTrayAction, TrayConsumer } from "./trayFlow";
+import * as mock from "./mock";
+import { ClientSetup } from "./ClientSetup";
 import * as api from "./api";
 import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import { UiIcon } from "./UiIcon";
 import { OutputConsole, type ConsolePrompt, type ConsoleStatus, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
 import { EFFORTS, effortLabel, groupByFamily, supports } from "./modelFamilies";
 import { LANGS, setLang, t, useLang } from "./i18n";
+import { UpdatePanel, useUpdates } from "./Updates";
 import { profileTitle, supportsTool, type Diagnosis, type Environment, type HealthFix, type HealthIssue, type LauncherPreferences, type LauncherScan, type LaunchMode, type LaunchTarget, type Profile, type ToolId, type ModelInfo } from "./types";
 
 const TOOLS = { claude: { name: "Claude", cli: "Claude Code", Icon: ClaudeIcon }, codex: { name: "Codex", cli: "Codex CLI", Icon: CodexIcon } };
@@ -98,6 +103,7 @@ export function Launcher(props: {
   onReadConfig: (tools: ToolId[]) => Promise<Environment | null>;
 }) {
   const lang = useLang();
+  const updates = useUpdates();
   const [prefs, setPrefs] = useState<LauncherPreferences | null>(null);
   const prefsRef = useRef<LauncherPreferences | null>(null);
   const [scan, setScan] = useState<LauncherScan | null>(null);
@@ -116,6 +122,8 @@ export function Launcher(props: {
   const [modelList, setModelList] = useState<{ profileId: string; models: ModelInfo[] | null; error?: string } | null>(null);
   /** 设置页：正在修改哪个程序的路径（弹窗） */
   const [pathEdit, setPathEdit] = useState<LaunchTarget | null>(null);
+  const [setupTarget, setSetupTarget] = useState<LaunchTarget | null>(null);
+  const [trayWorking, setTrayWorking] = useState(false);
   /** 会覆盖配置文件的环境变量（只有变量名）；null = 还没读到 */
   const [overrides, setOverrides] = useState<string[] | null>(null);
   /** 等检测结果齐了，把「检测本机环境」写进输出：启动时一次，点刷新再一次 */
@@ -228,12 +236,12 @@ export function Launcher(props: {
     }
   }
   useEffect(() => {
-    setPicker(null); setPathEdit(null);
+    setPicker(null); setPathEdit(null); setSetupTarget(null);
     const run = pendingAfterPage.current;
     pendingAfterPage.current = null;
     run?.();
   }, [props.page]);
-  const disabled = props.busy || saving || refreshing || !prefs;
+  const disabled = props.busy || saving || refreshing || trayWorking || !prefs || updates.state.phase !== "idle";
   const recent = prefs ? prefs.recentDirectories.filter(p => p !== prefs.projectDirectory) : [];
 
   /** 某把密钥给某个工具用的模型；没单独设置就是默认模型 */
@@ -268,6 +276,31 @@ export function Launcher(props: {
     pendingAfterPage.current = run;
     props.onPage(tool);
   };
+  const trayReady = !!prefs && !!props.configRead && (!readTools.length || !!props.env) && !props.busy && !saving && !refreshing && !streaming && !thinking && updates.state.phase === "idle";
+  const trayRuntime = useRef({ ready: trayReady, run: async (_action: import("./trayFlow").TrayAction) => {} });
+  trayRuntime.current = { ready: trayReady, run: async action => {
+    if (!prefsRef.current) return;
+    setTrayWorking(true);
+    try {
+      await runTrayAction(action, prefsRef.current, {
+        consented, validateDirectory: api.validateProjectDirectory, save, launch: props.onLaunch,
+        showTool: (tool, picker) => onToolPage(tool, () => { if (picker) setPicker("service"); }),
+      });
+      if (action.kind === "directory") props.onPage(props.page === "codex" ? "codex" : "claude");
+    } finally { setTrayWorking(false); }
+  } };
+  const [trayConsumer] = useState(() => new TrayConsumer(
+    () => trayRuntime.current.ready, api.takeTrayAction,
+    action => trayRuntime.current.run(action), error => setError(String(error).replace(/^Error:\s*/, "")),
+  ));
+  useEffect(() => {
+    if (import.meta.env.DEV && mock.activeScenario()) return;
+    let stopped = false;
+    const unlisten = listen("tray-action-pending", () => { if (!stopped) void trayConsumer.drain(); });
+    void unlisten.then(() => { if (!stopped) void trayConsumer.drain(); }).catch(error => setError(String(error)));
+    return () => { stopped = true; void unlisten.then(fn => fn()).catch(() => {}); };
+  }, [trayConsumer]);
+  useEffect(() => { if (trayReady) void trayConsumer.drain(); }, [trayReady, trayConsumer]);
   /** 当前配置的一句话说明；对不上本工具里的密钥时说清楚「未保存在本工具」 */
   const describe = (config: Environment[keyof Environment] | undefined) => {
     if (!config) return t("读取中");
@@ -531,6 +564,7 @@ export function Launcher(props: {
           <button className="primary with-icon" disabled={!props.configRead || streaming || props.busy} onClick={() => void readLocalConfig([tool])}>
             <UiIcon name="refresh"/>{streaming ? t("读取中…") : t("读取本机 {tool} 配置", { tool: meta.name })}
           </button>
+          <button className="site" onClick={() => setSetupTarget(target)}>{t("安装 / 更新指引")}</button>
         </div> : <>
         {!!issues?.length && !checking && <div className="health-cards">
           {issues.map(issue => {
@@ -563,6 +597,7 @@ export function Launcher(props: {
         {/* 提示放在按钮上方：卡片固定高度，按钮贴底 */}
         {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
         {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
+        <button className="site client-help-link" disabled={disabled} onClick={() => setSetupTarget(target)}>{t(installed?.installed ? "安装 / 更新指引" : "安装客户端…")}</button>
         <button className="primary launch-button" disabled={disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough} onClick={async () => {
           if (!prefs || savingRef.current) return;
           const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
@@ -574,6 +609,10 @@ export function Launcher(props: {
 
       {/* 输出面板：标签栏右侧是这个工具的体检状态，最后一行的提示符可以直接贴报错让 AI 看 */}
       <OutputConsole lines={props.logs} busy={disabled} onClear={props.onClearLogs} dropped={props.droppedLogs} status={status} prompt={prompt} />
+
+      {setupTarget && <PickerDialog title={t("{name} 安装与更新", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
+        <ClientSetup key={setupTarget} target={setupTarget} installed={!!scan?.installations.find(i => i.target === setupTarget)?.installed} refresh={refresh} disabled={disabled} />
+      </PickerDialog>}
 
       {picker === "service" && <PickerDialog title={t("{tool} 使用的服务", { tool: meta.name })} onClose={() => setPicker(null)}
         footer={<button className="site" disabled={disabled} onClick={() => { setPicker(null); props.onKeys(tool); }}>{t("管理密钥 →")}</button>}>
@@ -691,6 +730,8 @@ export function Launcher(props: {
         </button>
       </section>
 
+      <UpdatePanel />
+
       {pathEdit && <PickerDialog title={t("{name} 程序路径", { name: targetName(pathEdit) })} onClose={() => setPathEdit(null)}
         footer={<button className="primary sm" disabled={disabled} onClick={async () => { await savePath(pathEdit, pathDrafts[pathEdit] ?? ""); setPathEdit(null); }}>{t("保存")}</button>}>
         <p className="settings-note">{t("留空表示自动检测。")}{(() => { const found = scan?.installations.find(i => i.target === pathEdit); return found?.installed && found.path ? t("当前检测到：{path}", { path: found.path }) : t("目前没有检测到这个程序。"); })()}</p>
@@ -703,6 +744,6 @@ export function Launcher(props: {
         </div>
       </PickerDialog>}
     </div>}
-    {error && <div className="toast err" role="alert">{error}</div>}
+    {error && <div className="toast err" role="alert">{t(error)}</div>}
   </div>;
 }

@@ -99,8 +99,15 @@ fn load_launcher_preferences_blocking() -> Result<Preferences> {
 }
 
 #[tauri::command]
-pub async fn save_launcher_preferences(preferences: Preferences) -> Result<()> {
-    crate::commands::blocking(move || save_launcher_preferences_blocking(preferences)).await
+pub async fn save_launcher_preferences(app: tauri::AppHandle, preferences: Preferences) -> Result<()> {
+    crate::commands::blocking(move || save_launcher_preferences_blocking(preferences)).await?;
+    crate::tray_menu::refresh(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn validate_project_directory(path: String) -> Result<()> {
+    crate::commands::blocking(move || working_directory(&path).map(|_| ())).await
 }
 
 fn save_launcher_preferences_blocking(mut preferences: Preferences) -> Result<()> {
@@ -408,6 +415,37 @@ pub async fn scan_launchers() -> Result<Scan> {
         .map_err(|e| AppError::Other(e.to_string()))?
 }
 
+/// Explicit, bounded version probe; never run during the normal installation scan.
+pub(crate) fn cli_version(target: Target) -> Result<(String, String)> {
+    if !target.cli() { return Err(AppError::Other("版本检查仅支持 CLI".into())); }
+    let prefs = load_preferences()?;
+    let Some(Location::Executable(path)) = discover(target, &prefs, &BTreeMap::new())? else {
+        return Err(AppError::Other("未找到 CLI，请先安装或设置程序路径".into()));
+    };
+    let mut cmd = version_command(&path);
+    if let Some(home) = dirs::home_dir() { cmd.current_dir(home); }
+    let output = crate::process::output(&mut cmd, std::time::Duration::from_secs(3))?;
+    if !output.status.success() { return Err(AppError::Other("CLI 版本检查失败，请在终端运行 --version 检查".into())); }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let version = crate::client_setup::parse_version_output(&text)
+        .ok_or_else(|| AppError::Other("无法识别 CLI 版本，请查看官方更新说明".into()))?;
+    Ok((version, path.to_string_lossy().into()))
+}
+
+fn version_command(path: &Path) -> Command {
+    #[cfg(windows)]
+    {
+        use base64::Engine;
+        let script = format!("$ErrorActionPreference='Stop'; & {} --version; if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}", ps_literal(&path.to_string_lossy()));
+        let mut command = Command::new(powershell());
+        command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
+            .arg(base64::engine::general_purpose::STANDARD.encode(script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>()));
+        command
+    }
+    #[cfg(not(windows))]
+    { let mut command = Command::new(path); command.arg("--version"); command }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchRequest {
@@ -573,6 +611,7 @@ pub struct LaunchReceipt {
     pub message: String,
 }
 fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
+    crate::updates::ensure_supported()?;
     let _guard = LAUNCH_LOCK
         .try_lock()
         .map_err(|_| AppError::Other("启动中，请稍候".into()))?;
@@ -642,6 +681,16 @@ pub async fn launch_client(req: LaunchRequest) -> Result<LaunchReceipt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(windows)]
+    fn version_probe_quotes_paths_and_only_passes_version_argument() {
+        let dir = crate::atomic::tests::TestDir::new();
+        let path = dir.0.join("version & 'quoted' $test.ps1");
+        std::fs::write(&path, "if ($args.Count -ne 1 -or $args[0] -ne '--version') { exit 9 }; Write-Output 'codex-cli 0.100.0'").unwrap();
+        let output = crate::process::output(&mut version_command(&path), std::time::Duration::from_secs(5)).unwrap();
+        assert!(output.status.success());
+        assert_eq!(crate::client_setup::parse_version_output(&String::from_utf8_lossy(&output.stdout)), Some("0.100.0".into()));
+    }
     #[test]
     fn desktop_identity_survives_display_name_changes() {
         let apps = parse_packaged_apps("ChatGPT|OpenAI.Codex_2p2nqsd0c76g0!App\nClaude|Claude_pzs8sxrjxfjjc!Claude\nOther|unrelated!App\nCodex|bad!App!extra\nCodex|bad/route!App");

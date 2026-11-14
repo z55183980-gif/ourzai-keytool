@@ -161,6 +161,7 @@ pub async fn save_profile(req: SaveProfileRequest) -> Result<String> {
 }
 
 pub fn save_profile_blocking(req: SaveProfileRequest) -> Result<String> {
+    crate::updates::ensure_supported()?;
     let is_new = req.id.trim().is_empty();
     if is_new && req.api_key.trim().is_empty() {
         return Err(AppError::Other("请先填上 API Key".into()));
@@ -273,14 +274,13 @@ pub async fn delete_profile(id: String) -> Result<()> {
 }
 
 pub fn delete_profile_blocking(id: String) -> Result<()> {
+    crate::updates::ensure_supported()?;
     state::delete_profile(&id)
 }
 
 #[tauri::command]
-pub async fn get_remote_config(ignore_proxy: bool) -> api::RemoteConfig {
-    // The new console has no /api/dbkey/config endpoint; never query the old gateway.
-    let _ = ignore_proxy;
-    api::builtin_defaults()
+pub async fn get_remote_config(ignore_proxy: bool) -> Result<api::RemoteConfig> {
+    Ok(crate::updates::get_client_policy(ignore_proxy).await?.config)
 }
 
 #[tauri::command]
@@ -289,6 +289,7 @@ pub async fn test_connection(
     api_key: String,
     ignore_proxy: bool,
 ) -> Result<api::TestResult> {
+    crate::updates::ensure_supported()?;
     api::list_models(&base_url, &api_key, ignore_proxy).await
 }
 
@@ -313,6 +314,7 @@ pub async fn gateway_browser_login_available(
 /// 返回要在系统浏览器里打开的登录地址。`switch_account` 时身份中心总是显示登录表单。
 #[tauri::command]
 pub fn gateway_browser_login_start(pending: tauri::State<'_, BrowserLogin>, switch_account: bool) -> Result<String> {
+    crate::updates::ensure_supported()?;
     let (login, url) = gateway::begin_browser_login(switch_account)?;
     *pending
         .0
@@ -329,6 +331,7 @@ pub async fn gateway_browser_login_finish(
     state: String,
     ignore_proxy: bool,
 ) -> Result<String> {
+    crate::updates::ensure_supported()?;
     // state 对上才取走 verifier；取走即作废，同一个回调不能用第二次。
     let verifier = {
         let mut held = pending
@@ -390,6 +393,7 @@ pub struct KeyStatus {
 pub async fn gateway_key_status(
     sessions: tauri::State<'_, SessionState>,
 ) -> Result<Vec<KeyStatus>> {
+    crate::updates::ensure_supported()?;
     let s = sessions.get_or_init(false)?;
     let list = gateway::list_tokens(&s).await?;
     let account = s.account_scope()?;
@@ -414,6 +418,7 @@ pub async fn gateway_key_status(
 pub async fn gateway_list_tokens(
     sessions: tauri::State<'_, SessionState>,
 ) -> Result<Vec<TokenView>> {
+    crate::updates::ensure_supported()?;
     let s = sessions.get_or_init(false)?;
     let list = gateway::list_tokens(&s).await?;
     let account = s.account_scope()?;
@@ -438,6 +443,7 @@ pub async fn gateway_adopt_token(
     profile_id: String,
     token_id: i64,
 ) -> Result<String> {
+    crate::updates::ensure_supported()?;
     let s = sessions.get_or_init(false)?;
     let key = gateway::fetch_key(&s, token_id).await?;
     if profile_id.trim().is_empty() {
@@ -472,6 +478,7 @@ pub async fn gateway_import_tokens(
     sessions: tauri::State<'_, SessionState>,
     token_ids: Vec<i64>,
 ) -> Result<ImportResult> {
+    crate::updates::ensure_supported()?;
     if token_ids.is_empty() {
         return Err(AppError::Other("请先勾选要导入的 Key".into()));
     }
@@ -554,6 +561,7 @@ pub async fn list_profile_models(
     base_url: String,
     ignore_proxy: bool,
 ) -> Result<Vec<api::ModelInfo>> {
+    crate::updates::ensure_supported()?;
     let key = state::load_profile_key(&profile_id)?
         .ok_or_else(|| AppError::Other("这一条还没填 API Key".into()))?;
     // 其他服务：没有 zAI 的模型目录，读它的 /models（优先 Codex 地址；只填了 Claude 地址就试 <地址>/v1）
@@ -657,7 +665,9 @@ pub async fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
 }
 
 pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
+    crate::updates::ensure_supported()?;
     let _guard = backup::lock()?;
+    crate::updates::ensure_supported()?;
     let mut out = ApplyResult::default();
 
     let api_key = state::load_profile_key(&req.profile_id)?
@@ -970,10 +980,12 @@ pub async fn rebuild_minimal_config(req: ApplyRequest) -> Result<ApplyResult> {
 }
 
 pub fn rebuild_minimal_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
+    crate::updates::ensure_supported()?;
     if !req.configure_codex || req.configure_claude {
         return Err(AppError::Other("重建配置仅支持 Codex".into()));
     }
     let _guard = backup::lock()?;
+    crate::updates::ensure_supported()?;
     let api_key = state::load_profile_key(&req.profile_id)?
         .ok_or_else(|| AppError::Other("这一条还没填 API Key".into()))?;
 
@@ -1129,6 +1141,7 @@ fn service_kind(service: &str) -> health::Service {
 
 /// 体检的全部规则。health_check 和 ai_diagnose 共用，保证 AI 看到的和卡片上显示的一致。
 pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<health::Issue>> {
+    crate::updates::ensure_supported()?;
     use health::{Service, Tool};
     let openai_base = req.base_url.trim_end_matches('/').to_string();
     let anthropic_base = claude_config::derive_anthropic_base_url(&openai_base);
@@ -1290,6 +1303,7 @@ pub struct AdoptResult {
 /// 密钥只在后端读出、测试、存进系统凭据库，不经过前端；测试不通过就不收录。
 #[tauri::command]
 pub async fn adopt_current_key(req: AdoptRequest) -> Result<AdoptResult> {
+    crate::updates::ensure_supported()?;
     use health::Tool;
     let openai_base = req.base_url.trim_end_matches('/').to_string();
     let current = match req.tool {
@@ -1432,6 +1446,7 @@ fn diagnosis_slot(tool: health::Tool, desktop: bool) -> &'static str {
 }
 
 pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Result<PreparedDiagnosis> {
+    crate::updates::ensure_supported()?;
     use health::Tool;
     // AI 诊断只允许走 zAI 网关。其他渠道的模型目录和接口协议不受本工具控制，
     // 即使能连通也不能保证使用配置中的诊断模型；在任何体检或网络请求前直接拒绝。
@@ -1495,7 +1510,7 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
     };
     let user = diagnose::user_message(&ctx, home);
 
-    let defaults = api::builtin_defaults();
+    let defaults = crate::updates::configuration()?;
     let available = match connection_for(&key, &openai_base, req.health.ignore_proxy, cache).await {
         health::Connection::Ok(models) => models,
         _ => Vec::new(),

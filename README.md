@@ -6,14 +6,14 @@
 
 ## 下载
 
-当前版本：**v0.2.6**。
+当前版本：**v0.2.7**。
 
 | 系统 | 安装包 | 说明 |
 | --- | --- | --- |
-| Windows x64 | [EXE 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.6/zAI-Key-Manager_Windows_x64-setup.exe) | 未做 Windows 代码签名 |
-| macOS 12+ | [DMG 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.6/zAI-Key-Manager_macOS.dmg) | Intel / Apple Silicon 通用版，已签名、公证 |
+| Windows x64 | [EXE 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.7/zAI-Key-Manager_Windows_x64-setup.exe) | 未做 Windows 代码签名 |
+| macOS 12+ | [DMG 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.7/zAI-Key-Manager_macOS.dmg) | Intel / Apple Silicon 通用版，已签名、公证 |
 
-Claude 与 Codex 客户端需单独安装。更多安装格式及 SHA-256 校验文件见 [v0.2.6 Release](https://github.com/z55183980-gif/ourzai-keytool/releases/tag/v0.2.6)。
+Claude 与 Codex 客户端需单独安装。更多安装格式及 SHA-256 校验文件见 [v0.2.7 Release](https://github.com/z55183980-gif/ourzai-keytool/releases/tag/v0.2.7)。
 
 ## 功能
 
@@ -21,6 +21,8 @@ Claude 与 Codex 客户端需单独安装。更多安装格式及 SHA-256 校验
 - 为 Claude / Codex 的桌面版和 CLI 选择密钥、服务与模型。
 - 检查安装和配置状态；修改配置前备份，支持回滚。
 - 密钥保存在系统密钥库，启动命令不携带密钥。
+- 签名自动更新与最低版本提示；托盘快捷启动、切换密钥和最近项目目录。
+- 客户端官方安装指引和 CLI 版本检查。
 
 选择“沿用当前配置”时直接打开客户端。客户端自身登录和项目级设置仍可能影响实际使用的服务。
 

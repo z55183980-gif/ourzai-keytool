@@ -29,6 +29,8 @@ Claude / Codex 自身的用户配置属于这些客户端的共享资源。用�
 
 ## 发布核验
 
+自动更新签名、最低版本策略与首次上线顺序见[自动更新说明](updates.md)。最低版本必须在对应更新包公开并验证后再提高。
+
 1. 同步 npm、Tauri 和 Cargo 版本，运行前端与 Rust 测试。
 2. 在本仓库推送新版本标签，等待 Windows 与 macOS 构建完成。
 3. 核对包内版本、SHA-256、macOS Developer ID 签名与 Apple 公证结果。

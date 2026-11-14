@@ -1,0 +1,8 @@
+.client-setup { display: grid; gap: 12px; padding: 4px; font-size: 13px; line-height: 1.65; }
+.client-setup p { margin: 0; }
+.client-setup button { padding: 9px 12px; border-radius: 12px; }
+.install-command { margin: 0; padding: 14px; border-radius: 12px; background: #eaf0f8; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.setup-hint, .setup-path { color: #61748b; font-size: 12px; overflow-wrap: anywhere; }
+.setup-error { color: #ac3434; overflow-wrap: anywhere; }
+.client-help-link { margin: 0 0 8px; font-size: 12px; align-self: flex-start; }

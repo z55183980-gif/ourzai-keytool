@@ -17,6 +17,9 @@ pub mod paths;
 pub mod process;
 pub mod state;
 pub mod ui_lang;
+pub mod updates;
+pub mod tray_menu;
+pub mod client_setup;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
@@ -78,21 +81,6 @@ fn watch_login_callback(app: &tauri::App) {
     });
 }
 
-/// 托盘菜单项：切换语言时要改它们的文字
-#[cfg(desktop)]
-struct TrayMenu {
-    show: tauri::menu::MenuItem<tauri::Wry>,
-    quit: tauri::menu::MenuItem<tauri::Wry>,
-}
-
-#[cfg(desktop)]
-fn tray_texts() -> (&'static str, &'static str) {
-    (
-        ui_lang::pick("显示主窗口", "顯示主視窗", "Show window"),
-        ui_lang::pick("退出", "退出", "Quit"),
-    )
-}
-
 /// 按当前界面语言更新窗口标题、托盘提示和托盘菜单
 pub(crate) fn apply_native_language(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -103,24 +91,15 @@ pub(crate) fn apply_native_language(app: &tauri::AppHandle) {
         if let Some(tray) = app.tray_by_id("main") {
             let _ = tray.set_tooltip(Some(ui_lang::app_name()));
         }
-        if let Some(menu) = app.try_state::<TrayMenu>() {
-            let (show, quit) = tray_texts();
-            let _ = menu.show.set_text(show);
-            let _ = menu.quit.set_text(quit);
-        }
+        tray_menu::refresh(app);
     }
 }
 
 #[cfg(desktop)]
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let (show_text, quit_text) = tray_texts();
-    let show = MenuItem::with_id(app, "show", show_text, true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", quit_text, true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    app.manage(TrayMenu { show: show.clone(), quit: quit.clone() });
+    let menu = tray_menu::menu(app.handle())?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip(ui_lang::app_name())
         .menu(&menu)
@@ -128,7 +107,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main(app),
             "quit" => app.exit(0),
-            _ => {}
+            id => tray_menu::dispatch(app, id),
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -159,6 +138,9 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::UpdateState::default())
+        .manage(tray_menu::TrayState::default())
         .manage(gateway::SessionState::new())
         .manage(TrayReady(AtomicBool::new(false)))
         .manage(commands::BrowserLogin::default())
@@ -195,6 +177,11 @@ pub fn run() {
             launcher::scan_launchers,
             launcher::validate_launch,
             launcher::launch_client,
+            launcher::validate_project_directory,
+            tray_menu::take_tray_action,
+            client_setup::client_install_guide,
+            client_setup::open_client_download,
+            client_setup::check_client_version,
             commands::load_app_state,
             commands::gateway_browser_login_available,
             commands::gateway_browser_login_start,
@@ -209,6 +196,10 @@ pub fn run() {
             commands::save_profile,
             commands::delete_profile,
             commands::get_remote_config,
+            updates::get_client_policy,
+            updates::check_for_updates,
+            updates::install_update,
+            updates::open_update_download,
             commands::test_connection,
             commands::list_backups,
             commands::restore_backup,

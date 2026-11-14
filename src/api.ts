@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { TrayAction } from "./trayFlow";
 import * as mock from "./mock";
 import type {
   AppState,
@@ -29,6 +30,19 @@ import type {
 // 生产构建里它会被替换成字面量 false，整段模拟代码连同 ./mock 一起被摇掉。
 const DEV = import.meta.env.DEV;
 const S = DEV ? mock.activeScenario() : null;
+
+export const takeTrayAction = (): Promise<TrayAction | null> => DEV && S ? Promise.resolve(null) : invoke("take_tray_action");
+export const validateProjectDirectory = (path: string): Promise<void> => DEV && S ? Promise.resolve() : invoke("validate_project_directory", { path });
+
+export interface ClientGuide { url: string; command: string | null; shell: string; note: string }
+export interface ClientVersion { current: string; latest: string | null; updateAvailable: boolean | null; path: string; warning: string | null }
+export const clientInstallGuide = (target: import("./types").LaunchTarget): Promise<ClientGuide> => DEV && S
+  ? Promise.resolve({ url: target.startsWith("claude") ? "https://code.claude.com/docs/en/setup" : "https://github.com/openai/codex", command: target.endsWith("cli") ? (target.startsWith("claude") ? "irm https://claude.ai/install.ps1 | iex" : "npm install -g @openai/codex@latest") : null, shell: "PowerShell", note: "安装完成后重新检测；若仍未找到，请重启本工具或设置程序路径。" })
+  : invoke("client_install_guide", { target });
+export const openClientDownload = (target: import("./types").LaunchTarget): Promise<void> => DEV && S ? Promise.resolve() : invoke("open_client_download", { target });
+export const checkClientVersion = (target: import("./types").LaunchTarget, ignoreProxy: boolean): Promise<ClientVersion> => DEV && S
+  ? Promise.resolve({ current: "0.99.0", latest: "0.100.0", updateAvailable: true, path: "C:\\Applications\\" + target, warning: null })
+  : invoke("check_client_version", { target, ignoreProxy });
 
 export const loadLauncherPreferences = (): Promise<LauncherPreferences> => DEV && S
   ? Promise.resolve({ projectDirectory: "C:\\Projects", recentDirectories: [], claudeMode: "cli", codexMode: "cli", claudeService: "current", codexService: "current", customPaths: {} })

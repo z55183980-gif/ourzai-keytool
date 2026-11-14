@@ -6,7 +6,6 @@ import type {
   Environment,
   GatewayToken,
   Profile,
-  RemoteConfig,
   LaunchMode,
   ToolId,
   KeyStatus,
@@ -24,6 +23,7 @@ import { effortLabel, pickModel } from "./modelFamilies";
 import { launchWithConfiguration } from "./launchFlow";
 import { profileServiceUrl, serviceUrlFields } from "./serviceUrl";
 import { getLang, t, useLang } from "./i18n";
+import { UpdateBanner, useUpdates } from "./Updates";
 import "./App.css";
 import "./Launcher.css";
 import "./LiquidGlass.css";
@@ -114,6 +114,7 @@ function initialPage(): Page {
 }
 
 export default function App() {
+  const updates = useUpdates();
   // 切换语言时整棵界面重新渲染；窗口标题也跟着换
   const lang = useLang();
   useEffect(() => {
@@ -131,7 +132,7 @@ export default function App() {
   const launchLock = useRef(false);
 
   const [env, setEnv] = useState<Environment | null>(null);
-  const [remote, setRemote] = useState<RemoteConfig | null>(null);
+  const remote = updates.state.policy!.config;
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -165,6 +166,8 @@ export default function App() {
   const lastSync = useRef("");
 
   const [busy, setBusy] = useState<Busy>(null);
+  useEffect(() => { updates.setBusy(busy !== null); return () => updates.setBusy(false); }, [busy, updates.setBusy]);
+  useEffect(() => { updates.setIgnoreProxy(ignoreProxy); }, [ignoreProxy, updates.setIgnoreProxy]);
   /** 输出面板的记录（本次运行期间，最多保留 MAX_LOG_LINES 行） */
   const [logs, setLogs] = useState<LogLine[]>([]);
   const logId = useRef(0);
@@ -239,8 +242,7 @@ export default function App() {
         setCleanup(st.cleanupResidue ?? true);
       }
 
-      const rc = await api.getRemoteConfig(st?.ignoreProxy ?? false);
-      setRemote(rc);
+      const rc = remote;
       setBaseUrl(rc.base_url);
       setAliasOpus(rc.claude_opus_model);
       setAliasSonnet(rc.claude_sonnet_model);
@@ -580,6 +582,7 @@ export default function App() {
   return (
     <div className="launcher-app">
       <div className="workspace-shell">
+      <UpdateBanner />
       <nav className="workspace-nav" aria-label={t("主导航")}>
         <div className="nav-pill liquid-glass">
           <span className="nav-lens" aria-hidden="true" style={{ transform: `translateX(${NAV_PAGES.indexOf(page) * 100}%)` }} />

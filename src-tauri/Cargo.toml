@@ -1,6 +1,6 @@
 [package]
 name = "dbkey"
-version = "0.2.6"
+version = "0.2.7"
 description = "zAI Claude / Codex 密钥管理"
 authors = ["zAI"]
 edition = "2021"
@@ -38,6 +38,8 @@ chrono = "0.4"
 dirs = "5"
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 sys-locale = "0.3"
+tauri-plugin-updater = "2"
+semver = "1"
 
 [profile.release]
 codegen-units = 1
@@ -45,3 +47,7 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+minisign-verify = "0.3"
+tauri = { version = "2", features = ["test"] }
