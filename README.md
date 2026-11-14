@@ -6,14 +6,14 @@
 
 ## 下载
 
-当前版本：**v0.2.7**。
+当前版本：**v0.2.8**。
 
 | 系统 | 安装包 | 说明 |
 | --- | --- | --- |
-| Windows x64 | [EXE 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.7/zAI-Key-Manager_Windows_x64-setup.exe) | 未做 Windows 代码签名 |
-| macOS 12+ | [DMG 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.7/zAI-Key-Manager_macOS.dmg) | Intel / Apple Silicon 通用版，已签名、公证 |
+| Windows x64 | [EXE 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.8/zAI-Key-Manager_Windows_x64-setup.exe) | 未做 Windows 代码签名 |
+| macOS 12+ | [DMG 安装包](https://github.com/z55183980-gif/ourzai-keytool/releases/download/v0.2.8/zAI-Key-Manager_macOS.dmg) | Intel / Apple Silicon 通用版，已签名、公证 |
 
-Claude 与 Codex 客户端需单独安装。更多安装格式及 SHA-256 校验文件见 [v0.2.7 Release](https://github.com/z55183980-gif/ourzai-keytool/releases/tag/v0.2.7)。
+Claude 与 Codex 客户端需单独安装。更多安装格式及 SHA-256 校验文件见 [v0.2.8 Release](https://github.com/z55183980-gif/ourzai-keytool/releases/tag/v0.2.8)。
 
 ## 功能
 

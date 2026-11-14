@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "密钥管理工具",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "identifier": "com.starnexus.dbkey",
   "build": {
     "beforeDevCommand": "npm run dev",

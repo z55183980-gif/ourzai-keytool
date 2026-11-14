@@ -7,7 +7,7 @@
     "url": "https://github.com/z55183980-gif/ourzai-keytool.git"
   },
   "homepage": "https://ourzai.com/tools/key-manager",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "scripts": {
     "dev": "vite",

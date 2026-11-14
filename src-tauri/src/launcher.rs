@@ -687,7 +687,10 @@ mod tests {
         let dir = crate::atomic::tests::TestDir::new();
         let path = dir.0.join("version & 'quoted' $test.ps1");
         std::fs::write(&path, "if ($args.Count -ne 1 -or $args[0] -ne '--version') { exit 9 }; Write-Output 'codex-cli 0.100.0'").unwrap();
-        let output = crate::process::output(&mut version_command(&path), std::time::Duration::from_secs(5)).unwrap();
+        // This checks quoting and arguments, not PowerShell cold-start latency.
+        // Hosted Windows runners can take over five seconds to start the shell.
+        // The process tests separately verify that deadlines terminate helpers.
+        let output = crate::process::output(&mut version_command(&path), std::time::Duration::from_secs(30)).unwrap();
         assert!(output.status.success());
         assert_eq!(crate::client_setup::parse_version_output(&String::from_utf8_lossy(&output.stdout)), Some("0.100.0".into()));
     }
