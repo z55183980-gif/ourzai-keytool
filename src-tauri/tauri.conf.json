@@ -13,12 +13,14 @@
     "windows": [
       {
         "title": "密钥管理工具",
-        "width": 560,
-        "height": 884,
+        "width": 480,
+        "height": 680,
         "center": true,
-        "minWidth": 560,
-        "minHeight": 560,
+        "minWidth": 420,
+        "minHeight": 600,
+        "maxWidth": 640,
         "resizable": true,
+        "maximizable": false,
         "theme": "Light"
       }
     ],

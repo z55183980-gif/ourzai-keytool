@@ -7,11 +7,12 @@ import { ClientSetup } from "./ClientSetup";
 import * as api from "./api";
 import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import { UiIcon } from "./UiIcon";
-import { OutputConsole, type ConsolePrompt, type ConsoleStatus, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
+import { OutputConsole, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
+import { RepairCard, type RepairView } from "./RepairCard";
 import { EFFORTS, effortLabel, groupByFamily, supports } from "./modelFamilies";
 import { LANGS, setLang, t, useLang } from "./i18n";
 import { UpdatePanel, useUpdates } from "./Updates";
-import { profileTitle, supportsTool, type Diagnosis, type Environment, type HealthFix, type HealthIssue, type LauncherPreferences, type LauncherScan, type LaunchMode, type LaunchTarget, type Profile, type ToolId, type ModelInfo } from "./types";
+import { profileTitle, supportsTool, type AskOption, type Diagnosis, type Environment, type HealthFix, type HealthIssue, type LauncherPreferences, type LauncherScan, type LaunchMode, type LaunchTarget, type Profile, type ToolId, type ModelInfo } from "./types";
 
 const TOOLS = { claude: { name: "Claude", cli: "Claude Code", Icon: ClaudeIcon }, codex: { name: "Codex", cli: "Codex CLI", Icon: CodexIcon } };
 const TOOL_IDS: ToolId[] = ["claude", "codex"];
@@ -57,6 +58,20 @@ export function PickerDialog(props: { title: string; onClose: () => void; footer
     </div>
   </div>;
 }
+/** 一键修复的状态：进行中 / 等 AI 方案里的选择 / 选启动后遇到的症状 / 结果 */
+type RepairState =
+  | { phase: "busy"; title: string; steps: string[]; current: number }
+  | { phase: "ask"; question: string; cause?: string; options: AskOption[] }
+  | { phase: "symptom" }
+  | { phase: "result"; level: "ok" | "warn" | "error"; title: string; detail?: string; steps?: string[]; backupId?: string; next?: LogAction; ai?: boolean };
+/** 「启动后遇到问题？」的预设症状：代替原来的报错输入框，选中的那条作为描述交给 zAI */
+const SYMPTOMS = ["提示 401 / 认证失败", "提示模型不存在 / 404", "连不上 / 请求超时", "打开就闪退 / 没反应"];
+/** 体检已经能确定的写入类修复：Codex 配置损坏先重建，其次重写 */
+const localFix = (tool: ToolId, issues: HealthIssue[]): HealthFix | null =>
+  tool === "codex" && issues.some(i => i.fix === "rebuild") ? "rebuild"
+    : issues.some(i => i.fix === "rewrite") ? "rewrite" : null;
+const errText = (e: unknown) => String(e).replace(/^Error:\s*/, "");
+
 /** 每个工具的体检概况，给操作栏画红点 */
 export type ToolAlerts = Partial<Record<ToolId, "error" | "warn">>;
 
@@ -71,7 +86,10 @@ export function Launcher(props: {
   onAdvanced: () => void;
   onRefresh: () => Promise<void>;
   checkHealth: (tool: ToolId, service: string, mode: LaunchMode) => Promise<HealthIssue[]>;
-  onFix: (tool: ToolId, profileId: string | null, fix: Exclude<HealthFix, "none" | "model">, mode: LaunchMode) => Promise<boolean> | boolean;
+  /** 写入配置时返回这次改动的备份号（可撤销）；跳转页面或没写入时返回 null */
+  onFix: (tool: ToolId, profileId: string | null, fix: Exclude<HealthFix, "none" | "model">, mode: LaunchMode) => Promise<string | null>;
+  /** 用备份号还原配置 */
+  onRestore: (backupId: string) => Promise<boolean>;
   diagnose: (tool: ToolId, mode: LaunchMode, service: string, profileId: string, note: string) => Promise<Diagnosis>;
   onAlerts: (alerts: ToolAlerts) => void;
   /** 在浏览器打开开发者控制台 */
@@ -132,8 +150,10 @@ export function Launcher(props: {
   const [streaming, setStreaming] = useState(false);
   /** 已经自动或手动读过一次安装情况，避免重复扫描 */
   const scanned = useRef(false);
-  /** 正在做 AI 诊断的工具 */
-  const [thinking, setThinking] = useState<ToolId | null>(null);
+  /** 每个工具的一键修复：进行中、等用户选择、或上一次的结果 */
+  const [repair, setRepairs] = useState<Partial<Record<ToolId, RepairState>>>({});
+  const setRepair = (tool: ToolId, r: RepairState | null) => setRepairs(x => ({ ...x, [tool]: r ?? undefined }));
+  const repairing = TOOL_IDS.some(tool => repair[tool]?.phase === "busy");
   /** 输出行上的按钮可能要先切到对应工具页再打开弹窗：切页会清掉弹窗，所以先记下来，切完再执行 */
   const pendingAfterPage = useRef<(() => void) | null>(null);
   const pageRef = useRef(props.page);
@@ -276,7 +296,7 @@ export function Launcher(props: {
     pendingAfterPage.current = run;
     props.onPage(tool);
   };
-  const trayReady = !!prefs && !!props.configRead && (!readTools.length || !!props.env) && !props.busy && !saving && !refreshing && !streaming && !thinking && updates.state.phase === "idle";
+  const trayReady = !!prefs && !!props.configRead && (!readTools.length || !!props.env) && !props.busy && !saving && !refreshing && !streaming && !repairing && updates.state.phase === "idle";
   const trayRuntime = useRef({ ready: trayReady, run: async (_action: import("./trayFlow").TrayAction) => {} });
   trayRuntime.current = { ready: trayReady, run: async action => {
     if (!prefsRef.current) return;
@@ -387,8 +407,8 @@ export function Launcher(props: {
     if (envReportWanted && reportEnvironment()) setEnvReportWanted(false);
   }, [envReportWanted, scan, props.env, overrides]);
 
-  /** 体检 / AI 给出的动作 → 输出行尾的按钮 */
-  const fixAction = (tool: ToolId, fix: HealthFix, opts: { verifyAfterWrite?: boolean } = {}): LogAction | null => {
+  /** 体检 / AI 给出的动作 → 按钮（日志行尾、修复结果卡）。写入配置的走一键修复的流程：备份、写入、复检 */
+  const fixAction = (tool: ToolId, fix: HealthFix): LogAction | null => {
     const c = ctxFor(tool);
     const pickKey: LogAction = { label: t("选择密钥"), run: () => onToolPage(tool, () => setPicker("service")) };
     // rebuild_minimal_config only rebuilds Codex's config.toml. Never expose it
@@ -407,12 +427,7 @@ export function Launcher(props: {
         if (!id) return pickKey;
         return {
           label: fix === "rebuild" ? t("重建配置") : t("修复"),
-          run: async () => {
-            const applied = await props.onFix(tool, id, fix, modeOf(tool));
-            if (opts.verifyAfterWrite && applied && (fix === "rewrite" || fix === "rebuild")) {
-              await verifyAfterFix(tool, id);
-            }
-          },
+          run: () => onToolPage(tool, () => void applyFix(tool, fix, false)),
         };
       }
     }
@@ -430,17 +445,6 @@ export function Launcher(props: {
       props.log(issue.level === "error" ? "err" : "warn", t(issue.text), { group, batch, actions });
     }
   };
-  /** AI 写入成功后立即复检，避免只看到“已写入”而不知道实际是否生效。 */
-  const verifyAfterFix = async (tool: ToolId, service: string) => {
-    try {
-      const issues = await props.checkHealth(tool, service, modeOf(tool));
-      lastHealth.current[tool] = `${service}|${modeOf(tool)}|${issues.map(i => i.id).join(",")}`;
-      setHealth(h => ({ ...h, [tool]: issues }));
-      reportHealth(tool, issues, t("修复后体检 {tool}", { tool: healthName(tool) }));
-    } catch (e) {
-      props.log("err", t("修复后体检失败：{error}", { error: String(e).replace(/^Error:\s*/, "") }));
-    }
-  };
   // 体检结果有变化（问题不同、换了服务）才写一次，自动重查但结果一样时不刷屏
   const lastHealth = useRef<Record<ToolId, string>>({ claude: "", codex: "" });
   useEffect(() => {
@@ -454,25 +458,155 @@ export function Launcher(props: {
       reportHealth(tool, issues);
     }
   }, [health, streaming]);
-  /** 提示符里回车：交给 AI 诊断，结果写进输出 */
-  const askAi = async (tool: ToolId, mode: LaunchMode, note: string) => {
+  /** 重新体检一个工具并写进日志；一键修复、撤销之后用 */
+  const recheck = async (tool: ToolId, title?: string) => {
+    const issues = await props.checkHealth(tool, serviceFor(tool), modeOf(tool));
+    lastHealth.current[tool] = `${serviceFor(tool)}|${modeOf(tool)}|${issues.map(i => i.id).join(",")}`;
+    setHealth(h => ({ ...h, [tool]: issues }));
+    reportHealth(tool, issues, title);
+    return issues;
+  };
+  /** 状态卡上的「重新检查」：重新扫描安装情况、配置和环境变量，体检随之自动重跑 */
+  const recheckAll = async () => {
+    setError(null);
+    await Promise.all([refresh(), props.onRefresh(), api.envOverrides().then(setOverrides).catch(() => {})]);
+    setEnvReportWanted(true);
+  };
+
+  // —————— 一键修复 ——————
+  // 换了服务或启动方式，上一次的修复结果就不再对应当前配置：清掉（进行中的不动）
+  useEffect(() => {
+    setRepairs(x => Object.fromEntries(Object.entries(x).filter(([, r]) => r?.phase === "busy")));
+  }, [claudeService, codexService, prefs?.claudeMode, prefs?.codexMode]);
+  const STEP_ANALYZE = t("分析问题"), STEP_WRITE = t("备份并写入配置"), STEP_VERIFY = t("复检");
+
+  /** 写入配置类的修复：备份 → 写入 → 复检；修完反而多出新的错误时自动还原 */
+  const applyFix = async (tool: ToolId, fix: HealthFix, analyzed: boolean, ai = false) => {
     const c = ctxFor(tool);
-    if (!c.aiProfile || thinking) return;
-    const group = `ai-${tool}`, batch = props.nextBatch();
-    props.log("cmd", `${t("让 zAI 帮你看看")} · ${TOOLS[tool].name}${note ? `${t("：")}${note.length > 60 ? note.slice(0, 60) + "…" : note}` : ""}`, { group, batch });
-    setThinking(tool);
+    if (fix !== "rewrite" && fix !== "rebuild") {
+      setRepair(tool, null);
+      fixAction(tool, fix)?.run();
+      return;
+    }
+    if (fix === "rebuild" && tool !== "codex") {
+      setRepair(tool, { phase: "result", level: "error", title: t("重建配置仅支持 Codex") });
+      return;
+    }
+    if (!c.fixProfile) {
+      setRepair(tool, { phase: "result", level: "warn", title: t("先选择一把密钥"), detail: t("修复要用一把密钥重新写入配置。"), next: { label: t("选择密钥"), run: () => setPicker("service") } });
+      return;
+    }
+    const steps = analyzed ? [STEP_ANALYZE, STEP_WRITE, STEP_VERIFY] : [STEP_WRITE, STEP_VERIFY];
+    const at = (step: string) => steps.indexOf(step);
+    const title = t("正在修复 {tool}", { tool: healthName(tool) });
+    const before = health[tool] ?? [];
+    setRepair(tool, { phase: "busy", title, steps, current: at(STEP_WRITE) });
+    const backupId = await props.onFix(tool, c.fixProfile, fix, modeOf(tool));
+    if (typeof backupId !== "string") {
+      setRepair(tool, { phase: "result", level: "error", title: t("没能写入配置"), detail: t("原配置没有改动。详情见「设置 → 诊断日志」。") });
+      return;
+    }
+    setRepair(tool, { phase: "busy", title, steps, current: at(STEP_VERIFY) });
+    let after: HealthIssue[];
     try {
-      const d = await props.diagnose(tool, mode, c.service, c.aiProfile, note);
-      const action = fixAction(tool, d.action, { verifyAfterWrite: true });
-      props.log("ai", d.cause, { group, batch, actions: action ? [action] : [] });
-      d.steps.forEach((step, i) => props.log("path", `${i + 1}. ${step}`));
-      props.log("info", t("以上由 zAI 生成，仅供参考"));
+      after = await recheck(tool, t("修复后体检 {tool}", { tool: healthName(tool) }));
     } catch (e) {
-      props.log("err", String(e).replace(/^Error:\s*/, "") || t("zAI 暂时看不了，稍后重试"));
-    } finally {
-      setThinking(null);
+      props.log("err", t("修复后体检失败：{error}", { error: errText(e) }));
+      setRepair(tool, { phase: "result", level: "warn", title: t("已写入配置，但复检没有完成"), detail: t("可以点「重新检查」再试一次。"), backupId });
+      return;
+    }
+    const beforeIds = new Set(before.map(i => i.id));
+    const worse = after.filter(i => i.level === "error" && !beforeIds.has(i.id));
+    if (worse.length) {
+      const restored = await props.onRestore(backupId);
+      if (restored) await recheck(tool).catch(() => {});
+      setRepair(tool, {
+        phase: "result", level: "error",
+        title: restored ? t("修复没有成功，已恢复原配置") : t("修复后出现新问题"),
+        detail: worse.map(i => t(i.text)).join(" · "), backupId: restored ? undefined : backupId,
+      });
+      return;
+    }
+    const fixed = before.filter(i => !after.some(a => a.id === i.id)).map(i => t(i.text));
+    const left = after.filter(i => i.level === "error");
+    const warnsLeft = after.length - left.length;
+    setRepair(tool, left.length
+      ? { phase: "result", level: "warn", title: t("部分问题仍在"), detail: left.map(i => t(i.text)).join(" · "), backupId, ai }
+      : {
+        phase: "result", level: "ok", title: t("已修复，复检通过"), backupId, ai,
+        detail: [fixed.join(" · "), warnsLeft ? t("还有 {n} 个提醒", { n: warnsLeft }) : ""].filter(Boolean).join(" · ") || undefined,
+      });
+  };
+
+  /**
+   * 一键修复 / 启动后遇到问题：交给 zAI 出修复方案。
+   * - 需要用户拿主意 → 选择卡；能直接修 → 备份、写入、复检；只能手动处理 → 列出步骤。
+   * - 没有 zAI Key 或 AI 调不通时，体检已经能确定的修复照常执行。
+   */
+  const startRepair = async (tool: ToolId, symptom = "") => {
+    const issues = health[tool] ?? [];
+    const c = ctxFor(tool);
+    const local = localFix(tool, issues);
+    const blocked = issues.some(i => i.id === "K1" || i.id === "K2");
+    const group = `ai-${tool}`, batch = props.nextBatch();
+    props.log("cmd", symptom ? `${t("启动后遇到问题")} · ${healthName(tool)}${t("：")}${t(symptom)}` : `${t("一键修复")} · ${healthName(tool)}`, { group, batch });
+    if (!c.aiProfile || blocked) {
+      if (local && !symptom) return applyFix(tool, local, false);
+      setRepair(tool, blocked
+        ? { phase: "result", level: "warn", title: t("先处理密钥或网络问题"), detail: t("密钥无效或连不上服务器时，zAI 也无法分析。") }
+        : { phase: "result", level: "warn", title: t("需要 zAI Key 才能让 AI 分析"), detail: t("选择或导入一把 zAI Key 后，zAI 会帮你找出原因并修复。"), next: { label: t("选择或导入 zAI Key"), run: props.onLoginImport } });
+      return;
+    }
+    // 描述启动问题时多半只需给出步骤，不预告写入；一键修复则预告完整的三步
+    setRepair(tool, { phase: "busy", title: t("zAI 正在分析"), steps: symptom ? [STEP_ANALYZE] : [STEP_ANALYZE, STEP_WRITE, STEP_VERIFY], current: 0 });
+    let d: Diagnosis;
+    try {
+      d = await props.diagnose(tool, modeOf(tool), c.service, c.aiProfile, symptom);
+    } catch (e) {
+      props.log("err", errText(e) || t("zAI 暂时看不了，稍后重试"), { group, batch });
+      if (local && !symptom) return applyFix(tool, local, false);
+      const title = t("zAI 暂时看不了，稍后重试"), detail = t(errText(e));
+      setRepair(tool, { phase: "result", level: "error", title, detail: detail && detail !== title ? detail : undefined });
+      return;
+    }
+    props.log("ai", d.cause, { group, batch });
+    d.steps.forEach((step, i) => props.log("path", `${i + 1}. ${step}`));
+    const options = (d.ask?.options ?? []).filter(o => o.action !== "none" && !(o.action === "rebuild" && tool !== "codex"));
+    if (d.ask && options.length) {
+      setRepair(tool, { phase: "ask", question: d.ask.question, cause: d.cause, options });
+      return;
+    }
+    // AI 没给出可执行的动作时，体检已经确定的修复照样做（只针对一键修复，不针对用户描述的启动问题）
+    const action: HealthFix | null = d.action !== "none" ? d.action : symptom ? null : local;
+    if (action === "rewrite" || action === "rebuild") return applyFix(tool, action, true, true);
+    const next = action ? fixAction(tool, action) : null;
+    setRepair(tool, { phase: "result", level: "warn", title: d.cause, steps: d.steps, ai: true, next: next ?? undefined,
+      detail: next ? undefined : t("这个问题需要你手动处理，按下面的步骤做。") });
+  };
+  const undoRepair = async (tool: ToolId, backupId: string) => {
+    if (await props.onRestore(backupId)) {
+      await recheck(tool).catch(() => {});
+      setRepair(tool, { phase: "result", level: "ok", title: t("已撤销，配置恢复到修复前") });
     }
   };
+
+  /** 只记 App 写的、不属于任何分组的结果（启动成功 / 失败等）：工具页没有日志面板，用提示条显示几秒 */
+  const [flash, setFlash] = useState<LogLine | null>(null);
+  const seenLog = useRef(props.logs[props.logs.length - 1]?.id ?? 0);
+  useEffect(() => {
+    const last = props.logs[props.logs.length - 1];
+    if (!last || last.id <= seenLog.current) return;
+    seenLog.current = last.id;
+    // 修复卡已经在说明结果时（写入、撤销）不再重复弹提示
+    const page = props.page === "claude" || props.page === "codex" ? props.page : null;
+    if (last.group || (last.kind !== "ok" && last.kind !== "err") || repairing || (page && repair[page])) return;
+    setFlash(last);
+  }, [props.logs]);
+  useEffect(() => {
+    if (!flash) return;
+    const timer = setTimeout(() => setFlash(null), flash.kind === "err" ? 8000 : 4000);
+    return () => clearTimeout(timer);
+  }, [flash]);
 
   /** 一个工具的完整页面：顶部启动区，下面依次是服务、模型（选了 zAI 密钥时）、工作目录（仅 CLI），再下面是输出面板 */
   function toolPage(tool: ToolId) {
@@ -513,50 +647,106 @@ export function Launcher(props: {
     const model = selected?.hasKey ? modelOf(tool, selected) : "";
     const sameModel = config?.currentModel === model && (tool !== "codex" || props.env?.codex.currentReasoningEffort === (selected?.codexEffort || "medium"));
     const isCurrent = service !== "current" && service === matchedService(tool);
+    // 启动按钮的悬停说明：会写入什么、在哪里打开
     const note = service === "current" ? t("不改动配置，{where}", { where })
-      : isCurrent && sameModel ? null
+      : isCurrent && sameModel ? where
       : isCurrent ? t("写入新的模型设置后，{where}", { where })
       : service === "official" ? t("切回官方服务后，{where}", { where })
       : selected ? t("写入「{name}」的配置后，{where}", { name: selected.name, where }) : t("请先选择可用的服务");
     const issues = health[tool];
-    const status: ConsoleStatus = !consented(tool) ? { level: "idle", text: `${meta.name} · ${t("未读取配置")}` }
-      : issues === null ? { level: "idle", text: `${meta.name} · ${t("检查中…")}` }
-      : issues === undefined ? { level: "idle", text: `${meta.name} · ${t("暂时无法检查")}` }
-      : {
-        level: !issues.length ? "ok" : issues.some(i => i.level === "error") ? "error" : "warn",
-        text: `${meta.name} · ${issues.length ? t("{n} 个问题", { n: issues.length }) : t("未发现问题")}`,
-        title: t("再列一遍当前的体检结果"), onClick: () => reportHealth(tool, issues),
-      };
-    // 密钥无效或连不上时，AI 也调不通，先把这两项修好
-    const blocked = !!issues?.some(i => i.id === "K1" || i.id === "K2");
-    const prompt: ConsolePrompt = {
-      enabled: consented(tool) && !!aiProfile && !blocked && !thinking,
-      busy: thinking === tool,
-      placeholder: t(!consented(tool) ? "先读取本机配置，才能让 zAI 帮你看看" : !aiProfile ? "AI 诊断需要 zAI Key，请选择或导入一把 zAI Key" : blocked ? "先处理上面的密钥或网络问题，才能让 zAI 帮你看看" : "遇到报错？粘贴到这里，回车让 zAI 帮你看看"),
-      onSubmit: note => void askAi(tool, mode, note),
-      unlock: consented(tool) && !aiProfile ? { label: t("选择或导入 zAI Key"), run: props.onLoginImport } : undefined,
-    };
     const checking = streaming || refreshing || !scan || issues === null;
+    const errors = issues?.filter(i => i.level === "error") ?? [];
+    const warns = issues?.filter(i => i.level === "warn") ?? [];
+    /** 能修：体检能确定修法，或者有 zAI Key 可以让 AI 看 */
+    const canRepair = (list: HealthIssue[]) => list.length > 0 && (!!localFix(tool, list) || !!aiProfile);
+    /** 要你自己处理的错误（密钥失效、连不上、模型不可用）：主按钮直接给对应动作 */
+    const blocker = errors.find(i => i.fix === "keys" || i.fix === "settings" || i.fix === "model");
+    const blockerAction = blocker ? fixAction(tool, blocker.fix) : null;
+    const missing = !!installed && !installed.installed;
+    const launchDisabled = disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough;
+    const launchNow = async () => {
+      if (!prefs || savingRef.current) return;
+      setRepair(tool, null);
+      const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
+      if (ok && mode === "cli") await save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0, 8) });
+    };
+    const r = repair[tool];
 
-    // 启动卡片只展示配置与操作，状态摘要统一放在下方活动记录。
+    // 主按钮只有一个，随状态变：没装 → 安装；要你处理的错误 → 对应动作；能修的错误 → 一键修复；其余 → 启动
+    type Main = { label: string; icon: "terminal" | "desktop" | "sparkle" | "key" | "settings" | "external"; run: () => void; kind: "primary" | "repair"; off?: boolean; title?: string };
+    const main: Main = missing ? { label: t("安装 {name}", { name: targetName(target) }), icon: "external", kind: "primary", run: () => setSetupTarget(target) }
+      : blockerAction && blocker ? { label: blocker.id === "K1" ? t("换一把密钥") : blockerAction.label, icon: blocker.fix === "settings" ? "settings" : "key", kind: "primary", run: blockerAction.run, off: disabled }
+      : errors.length && canRepair(errors) ? { label: t("一键修复"), icon: "sparkle", kind: "repair", run: () => void startRepair(tool), off: disabled }
+      : { label: props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) }), icon: mode === "cli" ? "terminal" : "desktop", kind: "primary", run: () => void launchNow(), off: launchDisabled, title: note ?? undefined };
+    const launchIsMain = !missing && !blocker && !(errors.length && canRepair(errors));
+    const secondary: LogAction | null = missing ? { label: t("已安装？设置程序路径"), run: props.onSettings }
+      : blocker?.id === "K1" ? { label: t("去控制台 ↗"), run: props.onConsole }
+      : !launchIsMain && !launchDisabled ? { label: t("仍然启动"), run: () => void launchNow() }
+      : launchIsMain && !launchDisabled && !errors.length ? { label: t("启动后遇到问题？"), run: () => setRepair(tool, { phase: "symptom" }) }
+      : null;
+
+    /**
+     * 状态卡：浅色底 + 图标块 + 一行结论，右侧一个轻量动作。高度固定，不管什么状态卡片都不跳；
+     * 修复结果的说明、步骤放不下时在卡片里滚动。
+     */
+    const statusCard = () => {
+      const recheckBtn = <button type="button" className="readiness-action" disabled={disabled} onClick={() => void recheckAll()}>{t("重新检查")}</button>;
+      if (r?.phase === "result") return <div className={`readiness-card status-card ${r.level}`} role="status">
+        <span className="readiness-icon"><UiIcon name={r.level === "ok" ? "check" : "alert"}/></span>
+        <div className="status-card-body">
+          <strong>{r.title}</strong>
+          {r.detail && <p>{r.detail}</p>}
+          {!!r.steps?.length && <ol className="repair-result-steps">{r.steps.map(step => <li key={step}>{step}</li>)}</ol>}
+          {r.ai && <p className="repair-ai-note">{t("以上由 zAI 生成，仅供参考")}</p>}
+        </div>
+        {r.next && <button type="button" className="readiness-action" disabled={disabled} onClick={r.next.run}>{r.next.label}</button>}
+        {r.backupId && <button type="button" className="readiness-action" disabled={disabled} onClick={() => void undoRepair(tool, r.backupId!)}>{t("撤销")}</button>}
+        <button type="button" className="repair-dismiss" aria-label={t("关闭")} title={t("关闭")} onClick={() => setRepair(tool, null)}><UiIcon name="close"/></button>
+      </div>;
+      if (checking) return <div className="readiness-card status-card" role="status"><span className="readiness-icon is-spinning"><UiIcon name="refresh"/></span><div className="status-card-body"><strong>{t("正在检查…")}</strong></div></div>;
+      if (issues === undefined) return <div className="readiness-card status-card warn"><span className="readiness-icon"><UiIcon name="alert"/></span>
+        <div className="status-card-body"><strong>{t("暂时无法检查")}</strong></div>{recheckBtn}</div>;
+      if (!issues.length) return <div className="readiness-card status-card ok"><span className="readiness-icon"><UiIcon name="check"/></span>
+        <div className="status-card-body"><strong>{t("一切正常")}</strong></div>{recheckBtn}</div>;
+      return <div className={`readiness-card status-card ${errors.length ? "error" : "warn"}`}>
+        <span className="readiness-icon"><UiIcon name="alert"/></span>
+        <div className="status-card-body">
+          <strong>{errors.length ? t("{n} 个问题会导致启动失败", { n: errors.length }) : t("{n} 个提醒", { n: warns.length })}</strong>
+          <p className="clamp" title={issues.map(i => t(i.text)).join(" · ")}>{issues.map(i => t(i.text)).join(" · ")}</p>
+        </div>
+        {!errors.length && canRepair(warns)
+          ? <button type="button" className="readiness-action" disabled={disabled} onClick={() => void startRepair(tool)}><UiIcon name="sparkle"/>{t("一键修复")}</button>
+          : recheckBtn}
+      </div>;
+    };
+
+    /** 修复进行中 / 需要选择时，整块正文换成修复卡 */
+    const repairView: RepairView | null = !r || r.phase === "result" ? null
+      : r.phase === "busy" ? r
+      : r.phase === "ask" ? {
+        phase: "ask", title: t("zAI 修复 · 需要你确认"), question: r.question, cause: r.cause,
+        choices: r.options.map((o, i) => ({ label: o.label, hint: o.hint, recommended: i === 0, run: () => void applyFix(tool, o.action, true, true) })),
+        confirmLabel: t("确认并修复"), cancelLabel: t("先不处理"), footnote: t("写入前会自动备份配置，可以撤销"), onCancel: () => setRepair(tool, null),
+      }
+      : {
+        phase: "ask", title: t("启动后遇到问题？"), question: t("你看到的是哪种情况？"),
+        choices: SYMPTOMS.map(s => ({ label: t(s), run: () => void startRepair(tool, s) })),
+        confirmLabel: t("让 zAI 分析"), cancelLabel: t("取消"), onCancel: () => setRepair(tool, null),
+      };
+
     return <div className="tool-page" key={tool}>
       <section className={`tool-hero ${!consented(tool) ? "is-gated" : ""}`} aria-label={t("{tool} 启动", { tool: meta.name })}>
-        {/* 首次使用：先读取本机配置。点之前什么都不读，读取过程逐条显示在下方输出里 */}
         <div className="tool-hero-head">
           <span className={`launch-brand ${tool}`}><meta.Icon className={`brand brand-${tool}`} /></span>
           <div className="launch-title"><h1>{meta.name}</h1><span className={`install-state ${installed?.installed ? "found" : ""}`}>{installed ? installed.installed ? t("已安装") : t("未检测到") : t("待检测")}</span></div>
-          <button className="icon-round" disabled={disabled || !consented(tool)} title={refreshing ? t("检测中…") : t("刷新状态")} aria-label={t("刷新状态")} onClick={async () => {
-            setError(null);
-            await Promise.all([refresh(), props.onRefresh(), api.envOverrides().then(setOverrides).catch(() => {})]);
-            setEnvReportWanted(true);
-          }}><UiIcon name="refresh"/></button>
         </div>
 
         <div className="launch-modes" role="group" aria-label={t("{tool} 启动方式", { tool: meta.name })}>
           <span className="launch-mode-lens" aria-hidden="true" style={{ transform: `translateX(${mode === "cli" ? 100 : 0}%)` }}/>
-          {(["desktop", "cli"] as const).map(m => <button key={m} className="launch-mode-tab" aria-pressed={mode === m} disabled={disabled} onClick={() => save({ [`${tool}Mode`]: m })}><UiIcon name={m === "desktop" ? "desktop" : "terminal"}/>{m === "desktop" ? t("桌面版") : "CLI"}</button>)}
+          {(["desktop", "cli"] as const).map(m => <button key={m} className="launch-mode-tab" aria-pressed={mode === m} disabled={disabled || repairing} onClick={() => save({ [`${tool}Mode`]: m })}><UiIcon name={m === "desktop" ? "desktop" : "terminal"}/>{m === "desktop" ? t("桌面版") : "CLI"}</button>)}
         </div>
 
+        {/* 首次使用：先读取本机配置。点之前什么都不读 */}
         {!consented(tool) ? <div className="read-gate">
           <span className="onboard-mark"><UiIcon name="shield"/></span>
           <strong>{t("先了解你的 {tool} 环境", { tool: meta.name })}</strong>
@@ -565,16 +755,8 @@ export function Launcher(props: {
             <UiIcon name="refresh"/>{streaming ? t("读取中…") : t("读取本机 {tool} 配置", { tool: meta.name })}
           </button>
           <button className="site" onClick={() => setSetupTarget(target)}>{t("安装 / 更新指引")}</button>
-        </div> : <>
-        {!!issues?.length && !checking && <div className="health-cards">
-          {issues.map(issue => {
-            const action = issue.id === "K1" ? { label: t("去控制台 ↗"), run: props.onConsole } : fixAction(tool, issue.fix);
-            return <div className={`health-card ${issue.level}`} key={issue.id}>
-              <span className="health-mark" aria-hidden="true">{issue.level === "error" ? "!" : "·"}</span><p>{t(issue.text)}</p>
-              {action && <button type="button" disabled={disabled} onClick={action.run}>{action.label}<UiIcon name="arrow"/></button>}
-            </div>;
-          })}
-        </div>}
+        </div> : repairView ? <RepairCard key={`${tool}-${r?.phase}`} view={repairView} disabled={disabled} /> : <>
+        {statusCard()}
         <div className="launch-configuration">
 
         {/* 服务：卡片里只显示选中的一行，点「切换」弹窗选择 */}
@@ -594,25 +776,11 @@ export function Launcher(props: {
         </button>}
         </div>
 
-        {/* 提示放在按钮上方：卡片固定高度，按钮贴底 */}
         {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
-        {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
-        <button className="site client-help-link" disabled={disabled} onClick={() => setSetupTarget(target)}>{t(installed?.installed ? "安装 / 更新指引" : "安装客户端…")}</button>
-        <button className="primary launch-button" disabled={disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough} onClick={async () => {
-          if (!prefs || savingRef.current) return;
-          const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
-          if (ok && mode === "cli") await save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0,8) });
-        }}><UiIcon name={mode === "cli" ? "terminal" : "desktop"}/>{props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) })}</button>
-        {(broken || note) && <span className={`launch-note ${broken || invalidService ? "warn-text" : ""}`}>{broken ? t("配置文件需要修复，见下方输出") : note}</span>}
+        <button className={`primary launch-button ${main.kind === "repair" ? "is-repair" : ""}`} disabled={main.off} title={main.title} onClick={main.run}><UiIcon name={main.icon}/>{main.label}</button>
+        {secondary && <button type="button" className="launch-secondary" disabled={disabled} onClick={secondary.run}>{secondary.label}</button>}
         </>}
       </section>
-
-      {/* 输出面板：标签栏右侧是这个工具的体检状态，最后一行的提示符可以直接贴报错让 AI 看 */}
-      <OutputConsole lines={props.logs} busy={disabled} onClear={props.onClearLogs} dropped={props.droppedLogs} status={status} prompt={prompt} />
-
-      {setupTarget && <PickerDialog title={t("{name} 安装与更新", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
-        <ClientSetup key={setupTarget} target={setupTarget} installed={!!scan?.installations.find(i => i.target === setupTarget)?.installed} refresh={refresh} disabled={disabled} />
-      </PickerDialog>}
 
       {picker === "service" && <PickerDialog title={t("{tool} 使用的服务", { tool: meta.name })} onClose={() => setPicker(null)}
         footer={<button className="site" disabled={disabled} onClick={() => { setPicker(null); props.onKeys(tool); }}>{t("管理密钥 →")}</button>}>
@@ -712,6 +880,7 @@ export function Launcher(props: {
               <strong>{targetName(target)}</strong>
               <span className="setting-sub" title={installation?.path || (installation && t(installation.message))}>{!installation ? (refreshing ? t("检测中…") : t("待检测")) : installation.installed ? installation.path || t("已检测到") : t("未检测到")}{custom ? ` · ${t("手动指定")}` : ""}</span>
             </div>
+            <button type="button" className="site" disabled={disabled} onClick={() => setSetupTarget(target)}>{t("安装指引")}</button>
             <button type="button" className="site" disabled={disabled} onClick={() => setPathEdit(target)}>{t("更改")}</button>
           </div>;
         })}
@@ -721,7 +890,7 @@ export function Launcher(props: {
       <section className="settings-card">
         {/* 只重新读取已经同意过的工具；一个都没读过时先去工具页读 */}
         <button type="button" className="setting-row setting-link" onClick={() => void readLocalConfig(readTools)} disabled={streaming || props.busy || !readTools.length}>
-          <div className="setting-text"><strong>{streaming ? t("读取中…") : t("重新读取本机配置")}</strong><span className="setting-sub">{readTools.length ? t("安装位置、配置文件和环境变量，过程显示在下方输出里") : t("还没有读取过，请先到 Claude 或 Codex 页面读取")}</span></div>
+          <div className="setting-text"><strong>{streaming ? t("读取中…") : t("重新读取本机配置")}</strong><span className="setting-sub">{readTools.length ? t("安装位置、配置文件和环境变量，过程记录在下方诊断日志里") : t("还没有读取过，请先到 Claude 或 Codex 页面读取")}</span></div>
           <span className="setting-chevron" aria-hidden="true"/>
         </button>
         <button type="button" className="setting-row setting-link" onClick={props.onAdvanced} disabled={props.busy}>
@@ -731,6 +900,10 @@ export function Launcher(props: {
       </section>
 
       <UpdatePanel />
+
+      {/* 诊断日志：体检、写入、启动、AI 分析的完整记录。工具页不再常驻，排查时到这里看 */}
+      <h2 className="settings-section">{t("诊断日志")}</h2>
+      <OutputConsole lines={props.logs} busy={disabled} onClear={props.onClearLogs} dropped={props.droppedLogs} />
 
       {pathEdit && <PickerDialog title={t("{name} 程序路径", { name: targetName(pathEdit) })} onClose={() => setPathEdit(null)}
         footer={<button className="primary sm" disabled={disabled} onClick={async () => { await savePath(pathEdit, pathDrafts[pathEdit] ?? ""); setPathEdit(null); }}>{t("保存")}</button>}>
@@ -744,6 +917,10 @@ export function Launcher(props: {
         </div>
       </PickerDialog>}
     </div>}
-    {error && <div className="toast err" role="alert">{t(error)}</div>}
+    {setupTarget && <PickerDialog title={t("{name} 安装与更新", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
+      <ClientSetup key={setupTarget} target={setupTarget} installed={!!scan?.installations.find(i => i.target === setupTarget)?.installed} refresh={refresh} disabled={disabled} />
+    </PickerDialog>}
+    {error ? <div className="toast err" role="alert">{t(error)}</div>
+      : flash && (props.page === "claude" || props.page === "codex") && <div className={`toast ${flash.kind} flash`} role={flash.kind === "err" ? "alert" : "status"} onClick={() => setFlash(null)}>{flash.text}</div>}
   </div>;
 }

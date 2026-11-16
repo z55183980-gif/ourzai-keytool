@@ -144,7 +144,7 @@ export const listBackups = (): Promise<BackupEntry[]> =>
   DEV && S ? Promise.resolve(mock.mockBackups(S)) : invoke<BackupEntry[]>("list_backups");
 
 export const restoreBackup = (id: string): Promise<void> =>
-  DEV && S ? Promise.resolve() : invoke<void>("restore_backup", { id });
+  DEV && S ? Promise.resolve(mock.mockRestore()) : invoke<void>("restore_backup", { id });
 
 export const applyConfig = (req: ApplyRequest): Promise<ApplyResult> =>
   DEV && S ? Promise.resolve(mock.mockApply(req)) : invoke<ApplyResult>("apply_config", { req });

@@ -246,9 +246,7 @@ button.primary:disabled, .launcher-pages button.primary:disabled, .key-actions >
   }
 }
 
-@media (max-width: 720px) {
-  .tool-hero { border-radius: 26px; }
-}
+.tool-hero { border-radius: 26px; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .nav-pill.liquid-glass, .picker-sheet { background: #f5f8fd; }
   .tool-hero, .onboard, .key-workspace .card, .settings-card { background: #fafcff; }

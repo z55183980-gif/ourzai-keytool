@@ -6,7 +6,7 @@ import { t } from "./i18n";
  * - 保存、写入配置、启动、体检、AI 诊断都写在这里，可以回看。
  * - 行尾可以挂按钮（撤销、修复、换模型……）。同一组（group）里只有最新一批（batch）的按钮可点，
  *   避免点到已经过时的那条。
- * - 标签栏右侧是当前工具的体检状态；最后一行的提示符就是输入框：贴报错、回车交给 AI 诊断。
+ * - 放在设置页的「诊断日志」里，工具页不常驻；status、prompt 都是可选的，不传就不显示。
  */
 export type LogKind = "cmd" | "ok" | "err" | "warn" | "info" | "ai" | "path";
 export interface LogAction {
@@ -95,7 +95,7 @@ export function OutputConsole(props: {
   return (
     <section className={`console ${expanded ? "is-expanded" : "is-compact"}`} aria-label={t("输出")}>
       <div className="console-bar">
-        <span className="console-tab"><span className="console-icon" aria-hidden="true">&gt;_</span>{t("活动记录")}</span>
+        <span className="console-tab"><span className="console-icon" aria-hidden="true">&gt;_</span>{t("诊断日志")}</span>
         <span className="console-tools">
           {props.status && (
             <button type="button" className={`console-btn console-status ${props.status.level}`} title={props.status.title} disabled={!props.status.onClick} onClick={props.status.onClick}>
@@ -109,10 +109,10 @@ export function OutputConsole(props: {
       {/* 点终端空白处，焦点回到输入行 */}
       <div className="console-body" ref={bodyRef}
         onScroll={e => { const el = e.currentTarget; atBottom.current = el.scrollHeight - el.clientHeight - el.scrollTop < 24; }}
-        onMouseUp={() => { if (!window.getSelection()?.toString()) inputRef.current?.focus(); }}>
+        onMouseUp={() => { if (prompt && !window.getSelection()?.toString()) inputRef.current?.focus(); }}>
         <div role="log" aria-live="polite">
           {!!props.dropped && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("已丢弃更早的 {n} 条记录（最多保留 {max} 条）", { n: props.dropped, max: MAX_LOG_LINES })}</span></div>}
-          {props.lines.length === 0 && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("就绪。保存、写入配置、启动和体检的结果会显示在这里。")}</span></div>}
+          {props.lines.length === 0 && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("还没有记录。体检、写入配置、启动和 zAI 分析的过程会记在这里。")}</span></div>}
           {(expanded ? props.lines : props.lines.slice(-3)).map(l => (
             <div key={l.id} className={`console-line ${l.kind}`}>
               {l.kind !== "path" && <span className="console-time">{l.time}</span>}
@@ -125,7 +125,7 @@ export function OutputConsole(props: {
           ))}
         </div>
       </div>
-        <label className="console-prompt">
+        {prompt && <label className="console-prompt">
           <span className="console-ps" aria-hidden="true">{t("问题诊断")}</span>
           {prompt?.busy ? <span className="console-wait">{t("zAI 正在帮你看…")}<span className="console-cursor" /></span>
             : prompt?.enabled ? <input ref={inputRef} className="console-input" value={text} maxLength={500} spellCheck={false} autoComplete="off"
@@ -134,7 +134,7 @@ export function OutputConsole(props: {
             : <span className="console-wait">{prompt?.placeholder}{prompt?.unlock
                 ? <button type="button" className="console-btn console-action" disabled={props.busy} onClick={prompt.unlock.run}>{prompt.unlock.label}</button>
                 : <span className="console-cursor" />}</span>}
-        </label>
+        </label>}
     </section>
   );
 }

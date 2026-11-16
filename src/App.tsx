@@ -27,6 +27,7 @@ import { UpdateBanner, useUpdates } from "./Updates";
 import "./App.css";
 import "./Launcher.css";
 import "./LiquidGlass.css";
+import "./Repair.css";
 
 // value 是 Codex 认的英文值，label 是给用户看的。
 // 源码里还有 none/max/ultra/persistent，但 none 会被网关过滤掉，
@@ -384,8 +385,8 @@ export default function App() {
 
   // —————— 启用 ——————
 
-  /** 把一把密钥写进某个工具的用户配置（不启动客户端） */
-  const enable = async (profileId: string, tool: AppId, rebuild = false, desktop = false): Promise<boolean> => {
+  /** 把一把密钥写进某个工具的用户配置（不启动客户端）。成功返回这次改动的备份号，可用来撤销 */
+  const enable = async (profileId: string, tool: AppId, rebuild = false, desktop = false): Promise<string | null> => {
     const p = profiles.find((x) => x.id === profileId);
     const claudeAliases = p?.custom
       ? { opus: "", sonnet: "", haiku: "" }
@@ -418,10 +419,10 @@ export default function App() {
         text: t("{tool} 已改用「{name}」；请重新打开客户端，实际连接尚未验证", { tool: APP_META[tool].name, name: p?.name ?? t("所选密钥") }),
       });
       await reload(baseUrl);
-      return true;
+      return r.backupId;
     } catch (e) {
       setToast({ kind: "err", text: String(e) });
-      return false;
+      return null;
     } finally {
       setBusy(null);
     }
@@ -496,18 +497,19 @@ export default function App() {
     const model = p ? modelFor(tool, p) : "";
     return api.aiDiagnose({ tool, mode, service, model, profileId, note, lang: getLang(), baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
   };
-  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<boolean> => {
+  /** 体检 / AI 修复的动作。写入了配置时返回备份号（可撤销），其余（跳转页面、没写入）返回 null */
+  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<string | null> => {
     if (fix === "rebuild" && tool !== "codex") {
       setToast({ kind: "err", text: t("重建配置仅支持 Codex") });
-      return false;
+      return null;
     }
-    if (fix === "keys") { setPage("keys"); return false; }
-    if (fix === "settings") { setShowAdvanced(true); return false; }
+    if (fix === "keys") { setPage("keys"); return null; }
+    if (fix === "settings") { setShowAdvanced(true); return null; }
     if (profileId && !busy) return enable(profileId, tool, fix === "rebuild", tool === "claude" && mode === "desktop");
-    return false;
+    return null;
   };
 
-  const restore = async (id: string) => {
+  const restore = async (id: string): Promise<boolean> => {
     setBusy("restore");
     try {
       log("cmd", `${t("还原配置")} · ${id}`);
@@ -515,8 +517,10 @@ export default function App() {
       setLogs(l => l.map(x => x.group === "undo" ? { ...x, actions: undefined } : x));
       setToast({ kind: "ok", text: t("已还原到 {id} 那一次的配置", { id }) });
       await reload(baseUrl);
+      return true;
     } catch (e) {
       setToast({ kind: "err", text: String(e) });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -611,7 +615,7 @@ export default function App() {
       <Launcher page={page} busy={busy !== null} profiles={profiles} env={env}
         onLaunch={launch} onKeys={() => setPage("keys")}
         onSettings={() => setPage("settings")} onAdvanced={() => setShowAdvanced(true)}
-        onRefresh={async () => { await reload(baseUrl); }} checkHealth={checkHealth} onFix={fixHealth} diagnose={diagnose} onAlerts={setToolAlerts} onConsole={openSite}
+        onRefresh={async () => { await reload(baseUrl); }} checkHealth={checkHealth} onFix={fixHealth} onRestore={restore} diagnose={diagnose} onAlerts={setToolAlerts} onConsole={openSite}
         modelFor={modelFor} catalogKey={Object.keys(catalogs).join()} onSaveModel={saveModel} listModels={listModels}
         logs={logs} log={log} nextBatch={nextBatch} onClearLogs={clearLogs} droppedLogs={droppedLogs} onPage={setPage} onAdopt={adoptKey}
         onLoginImport={() => { setPage("keys"); setShowLogin(true); }} onManualKey={() => { setPage("keys"); startEdit(); }}

@@ -126,6 +126,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 记住的窗口状态：位置和大小
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::POSITION | StateFlags::SIZE
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -139,6 +145,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 只记位置和大小：可见性由托盘决定，不能让插件在启动时把窗口藏起来或弹出来
+        .plugin(tauri_plugin_window_state::Builder::new().with_state_flags(window_state_flags()).build())
         .manage(updates::UpdateState::default())
         .manage(tray_menu::TrayState::default())
         .manage(gateway::SessionState::new())
@@ -166,6 +174,9 @@ pub fn run() {
                     && window.state::<TrayReady>().0.load(Ordering::Relaxed)
                 {
                     api.prevent_close();
+                    // 关闭只是隐藏、进程不退出，插件等不到退出事件：隐藏前先存一次位置和大小
+                    use tauri_plugin_window_state::AppHandleExt;
+                    let _ = window.app_handle().save_window_state(window_state_flags());
                     let _ = window.hide();
                 }
             }

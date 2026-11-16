@@ -6,6 +6,7 @@
 //   http://localhost:1420/?mock=legacy       旧脚本残留 + 官方登录
 //   http://localhost:1420/?mock=broken       配置文件损坏
 //   http://localhost:1420/?mock=nocodex      没装 Codex
+//   http://localhost:1420/?mock=conflict     Claude 两种密钥冲突：一键修复会弹出选择卡
 
 import type {
   AppState,
@@ -30,7 +31,7 @@ import type {
   ModelInfo,
 } from "./types";
 
-export type Scenario = "configured" | "fresh" | "legacy" | "broken" | "nocodex";
+export type Scenario = "configured" | "fresh" | "legacy" | "broken" | "nocodex" | "conflict";
 
 export function activeScenario(): Scenario | null {
   if (!import.meta.env.DEV) return null;
@@ -187,6 +188,7 @@ function mockEnvBase(s: Scenario): { codex: Loose<CodexEnv>; claude: Loose<Claud
   };
 
   switch (s) {
+    case "conflict":
     case "configured":
       return {
         codex: {
@@ -327,7 +329,13 @@ export function mockTest(): TestResult {
   return { ok: true, message: `连上了，可以用 ${models.length} 个模型`, models };
 }
 
+/** 预览里「修复」过的工具：写入配置后体检不再报可修复的问题；还原备份后恢复原样 */
+const repaired = new Set<ToolId>();
+export function mockRestore() { repaired.clear(); }
+
 export function mockApply(req: ApplyRequest): ApplyResult {
+  if (req.configureClaude || req.configureClaudeDesktop) repaired.add("claude");
+  if (req.configureCodex) repaired.add("codex");
   return {
     backupId: "20260918-183012",
     wroteCodexConfig: req.configureCodex,
@@ -346,6 +354,15 @@ export function mockApply(req: ApplyRequest): ApplyResult {
 
 /** 体检假数据：broken 场景报文件损坏，legacy 场景报别名不全和环境变量覆盖 */
 export function mockHealth(s: Scenario, req: HealthRequest): HealthIssue[] {
+  // 修复过的：只剩写配置解决不了的提醒
+  if (repaired.has(req.tool)) return mockHealthRaw(s, req).filter(i => i.fix === "none" || i.fix === "keys" || i.fix === "settings");
+  return mockHealthRaw(s, req);
+}
+function mockHealthRaw(s: Scenario, req: HealthRequest): HealthIssue[] {
+  if (s === "conflict" && req.tool === "claude") return [
+    { id: "C2", level: "error", text: "模型别名不全，切换模型会报 404", fix: "rewrite" },
+    { id: "C4", level: "warn", text: "同时设置了两种密钥，可能冲突", fix: "rewrite" },
+  ];
   if (s === "broken") return req.tool === "codex"
     ? [{ id: "X1", level: "error", text: "Codex 配置文件格式损坏", fix: "rebuild" }]
     : [{ id: "C1", level: "error", text: "Claude 配置文件格式损坏，需手动修复", fix: "none" }];
@@ -359,10 +376,27 @@ export function mockHealth(s: Scenario, req: HealthRequest): HealthIssue[] {
   return [];
 }
 
-/** AI 诊断假数据：等 1.2 秒再返回；报错里写「失败」可以预览失败提示 */
+/** AI 诊断假数据：等 1.2 秒再返回。「启动后遇到问题？」选「连不上 / 请求超时」可以预览 AI 调用失败 */
 export async function mockDiagnose(s: Scenario, req: DiagnoseRequest): Promise<Diagnosis> {
   await new Promise(r => setTimeout(r, 1200));
-  if (req.note.includes("失败")) throw new Error("zAI 暂时看不了，稍后重试");
+  if (req.note.includes("超时")) throw new Error("zAI 暂时看不了，稍后重试");
+  if (s === "conflict" && req.tool === "claude" && !repaired.has("claude")) return {
+    cause: "配置里同时有 API Key 和 Auth Token，模型别名也没写齐",
+    steps: ["保留一种密钥并补全模型别名", "重新打开 Claude Code"],
+    action: "none",
+    ask: {
+      question: "配置里同时有 API Key 和 Auth Token，保留哪一个？",
+      options: [
+        { label: "保留 zAI 密钥", hint: "与当前服务一致，同时补全模型别名", action: "rewrite" },
+        { label: "换一把密钥", hint: "去密钥页重新选择", action: "keys" },
+      ],
+    },
+  };
+  if (req.note.includes("闪退")) return {
+    cause: "配置正常，闪退多半是客户端版本过旧",
+    steps: ["按「安装 / 更新指引」更新客户端", "更新后重新启动"],
+    action: "none",
+  };
   if (s === "legacy" && req.tool === "claude") return {
     cause: "模型别名没写齐，切换到 opus 时请求了网关上不存在的模型",
     steps: ["点「修复」重新写入配置", "重新打开 Claude Code", "再执行 /model opus 试试"],

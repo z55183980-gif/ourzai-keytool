@@ -208,7 +208,10 @@ export interface AdoptResult { id: string; name: string; existed: boolean }
 /** 网关目录里的模型和它支持的接口（responses / messages / chat.completions…）；endpoints 为空 = 未知 */
 export interface ModelInfo { id: string; endpoints: string[] }
 
-export interface Diagnosis { cause: string; steps: string[]; action: HealthFix }
+/** AI 需要用户拿主意时的选择卡：只能点选，没有输入框；每个选项都是已有的修复动作 */
+export interface AskOption { label: string; hint: string; action: HealthFix }
+export interface Ask { question: string; options: AskOption[] }
+export interface Diagnosis { cause: string; steps: string[]; action: HealthFix; ask?: Ask }
 
 export function isBroken(s: ConfigState | SettingsState): s is { broken: string } {
   return typeof s === "object" && s !== null && "broken" in s;
