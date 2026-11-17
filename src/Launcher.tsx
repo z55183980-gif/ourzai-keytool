@@ -115,7 +115,15 @@ export function Launcher(props: {
   /** 两个工具的体检结果。null = 检查中，undefined = 体检本身出错 */
   const [health, setHealth] = useState<Record<ToolId, HealthIssue[] | null | undefined>>({ claude: null, codex: null });
   /** 当前打开的选择弹窗：服务或工作目录。卡片里平时都只显示一行 */
-  const [picker, setPicker] = useState<"service" | "workdir" | "model" | null>(null);
+  const [picker, setPicker] = useState<"workdir" | "model" | null>(null);
+  /** 卡片里的服务列表：托盘「切换密钥」、输出里的「选择密钥」会把焦点带到这里 */
+  const serviceListRef = useRef<HTMLDivElement>(null);
+  const focusServices = () => requestAnimationFrame(() => {
+    const list = serviceListRef.current;
+    if (!list) return;
+    list.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    (list.querySelector<HTMLElement>('[aria-checked="true"]:not(:disabled)') ?? list.querySelector<HTMLElement>('[role="radio"]:not(:disabled)'))?.focus({ preventScroll: true });
+  });
   /** 「更换模型」弹窗里正在编辑的值 */
   const [modelEdit, setModelEdit] = useState<{ model: string; effort: string }>({ model: "", effort: "medium" });
   /** 可用模型列表，按密钥缓存，同一把密钥不重复获取 */
@@ -267,7 +275,7 @@ export function Launcher(props: {
     // AI 诊断只用 zAI 密钥：所选 zAI → 当前在用 zAI → 任一可用 zAI；其他渠道不参与诊断
     const zai = (p?: Profile) => !!p?.hasKey && !p.custom;
     const aiProfile = (zai(selected) ? selected : zai(activeProfile) ? activeProfile : props.profiles.find(zai))?.id;
-    const serviceLabel = service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : selected?.name ?? t("所选密钥");
+    const serviceLabel = service === "current" ? t("沿用现有配置") : service === "official" ? t("官方服务") : selected?.name ?? t("所选密钥");
     return { service, config, activeProfile, selected, fixProfile, aiProfile, serviceLabel };
   };
   /** 在某个工具页上做事：不在那一页就先切过去 */
@@ -284,7 +292,7 @@ export function Launcher(props: {
     try {
       await runTrayAction(action, prefsRef.current, {
         consented, validateDirectory: api.validateProjectDirectory, save, launch: props.onLaunch,
-        showTool: (tool, picker) => onToolPage(tool, () => { if (picker) setPicker("service"); }),
+        showTool: (tool, picker) => onToolPage(tool, () => { if (picker) focusServices(); }),
       });
       if (action.kind === "directory") props.onPage(props.page === "codex" ? "codex" : "claude");
     } finally { setTrayWorking(false); }
@@ -309,7 +317,7 @@ export function Launcher(props: {
       const p = props.profiles.find(x => x.id === config.activeProfileId && x.hasKey);
       return p ? profileTitle(p) : t("zAI 密钥");
     }
-    return t(({ official: "官方服务", unconfigured: "尚未配置", custom: "自定义服务", unknown: "实际服务待确认", broken: "配置文件损坏" } as const)[config.configurationStatus]);
+    return t(({ official: "官方服务", unconfigured: "尚未配置", custom: "自定义服务", unknown: "未能识别的服务", broken: "配置文件损坏" } as const)[config.configurationStatus]);
   };
   /** 配置里有 zAI 密钥，但没保存在本工具：可以一键收进密钥列表 */
   // 收进密钥列表只认 CLI 的 settings.json；桌面版的密钥不从这里收
@@ -390,7 +398,7 @@ export function Launcher(props: {
   /** 体检 / AI 给出的动作 → 输出行尾的按钮 */
   const fixAction = (tool: ToolId, fix: HealthFix, opts: { verifyAfterWrite?: boolean } = {}): LogAction | null => {
     const c = ctxFor(tool);
-    const pickKey: LogAction = { label: t("选择密钥"), run: () => onToolPage(tool, () => setPicker("service")) };
+    const pickKey: LogAction = { label: t("选择密钥"), run: () => onToolPage(tool, focusServices) };
     // rebuild_minimal_config only rebuilds Codex's config.toml. Never expose it
     // as a possible action for Claude, even if a model returns the wrong action.
     if (fix === "rebuild" && tool !== "codex") return null;
@@ -487,27 +495,30 @@ export function Launcher(props: {
     const passthrough = mode === "desktop" && service === "current";
     const broken = !passthrough && config?.configurationStatus === "broken";
     const { selected, aiProfile } = ctxFor(tool);
-    // 当前配置对不上列表时，「保持现有配置」到底是什么：把检测到的状态翻译成一句人话
-    const currentText = !config ? t("配置状态读取中") : t(({
-      configured: "zAI 密钥",
-      official: "官方服务", unconfigured: "尚未配置", custom: "自定义服务",
-      unknown: "实际服务待确认", broken: "配置文件需要修复",
-    })[config.configurationStatus]);
-    const keepTitle = `${t("保持现有配置")} · ${config?.unsavedGatewayKey ? t("zAI 密钥（未保存在本工具）") : currentText}`;
-    const pick = (value: string) => { setPicker(null); if (value !== service) void save({ [`${tool}Service`]: value }); };
+    // 「沿用现有配置」到底是什么：把检测到的状态翻译成一句人话，不再出现「待确认」这类含糊说法
+    const activeName = props.profiles.find(p => p.id === config?.activeProfileId && p.hasKey)?.name;
+    const currentText = !config ? t("正在读取当前配置…")
+      : config.unsavedGatewayKey ? t("现在用的是 zAI 密钥（未保存在本工具）")
+      : config.configurationStatus === "configured" ? (activeName ? t("现在用的是「{name}」", { name: activeName }) : t("现在用的是 zAI 密钥"))
+      : t(({
+        official: "现在用的是官方服务", unconfigured: "现在还没有配置任何服务", custom: "现在用的是自定义服务",
+        unknown: "识别不出现在用的服务，启动后请在应用内确认", broken: "配置文件损坏，需要先修复",
+      } as const)[config.configurationStatus as Exclude<typeof config.configurationStatus, "configured">]);
+    // 列表里哪一项是配置文件里正在生效的：给它挂「当前生效」
+    const live = matchedService(tool);
+    const pick = (value: string) => { if (value !== service) void save({ [`${tool}Service`]: value }); };
     const metaLine = (parts: (string | null | undefined)[], monoFirst?: boolean) => <small className="service-meta">{parts.filter(Boolean).map((part, i) => <span key={i} className={monoFirst && i === 0 ? "mono" : undefined} title={part!}>{part}</span>)}</small>;
-    // 弹窗里的一个单选项
-    const option = (value: string, title: string, parts: (string | null | undefined)[], opts: { current?: boolean; off?: boolean; monoFirst?: boolean; bad?: boolean } = {}) =>
-      <button key={value} type="button" role="radio" aria-checked={service === value} className={`service-option ${opts.bad ? "bad" : ""}`} disabled={disabled || opts.off} onClick={() => pick(value)}>
-        <span className="service-radio" aria-hidden="true"/>
-        <span className="service-text"><strong>{title}</strong>{metaLine(parts, opts.monoFirst)}</span>
-        {opts.current && <span className="service-current">{t("当前配置")}</span>}
-      </button>;
-    const pickedTitle = service === "current" ? keepTitle : service === "official" ? t("官方服务") : selected && supportsTool(selected, tool) ? profileTitle(selected) : t("所选密钥已失效");
-    const pickedParts = service === "current" ? [t("不改动配置文件"), config?.currentModel]
-      : service === "official" ? [t("使用你自己的官方账号登录")]
-      : selected?.hasKey ? [selected.maskedKey] : [t("请重新选择一项")];
-    const pickedMono = !!selected?.hasKey;
+    // 服务列表里的一行：左边整块是单选，右边是「当前生效」标记和可选的「编辑」
+    const option = (value: string, icon: React.ReactNode, title: string, parts: (string | null | undefined)[], opts: { off?: boolean; monoFirst?: boolean; bad?: boolean; edit?: boolean } = {}) =>
+      <div key={value} className={`service-row ${service === value ? "is-picked" : ""} ${opts.bad ? "bad" : ""}`}>
+        <button type="button" role="radio" aria-checked={service === value} className="service-pick" disabled={disabled || opts.off} onClick={() => pick(value)}>
+          <span className="service-radio" aria-hidden="true"/>
+          <span className="service-icon" aria-hidden="true">{icon}</span>
+          <span className="service-text"><strong>{title}</strong>{metaLine(parts, opts.monoFirst)}</span>
+        </button>
+        {live === value && <span className="service-current">{t("当前生效")}</span>}
+        {opts.edit && <button type="button" className="service-edit" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("编辑")}</button>}
+      </div>;
     const where = mode === "cli" ? t("在工作目录打开终端") : t("打开桌面应用");
     // 选中项就是当前配置（密钥、模型都一样）时，不再显示重复的启动说明。
     const model = selected?.hasKey ? modelOf(tool, selected) : "";
@@ -577,12 +588,21 @@ export function Launcher(props: {
         </div>}
         <div className="launch-configuration">
 
-        {/* 服务：卡片里只显示选中的一行，点「切换」弹窗选择 */}
-        <button type="button" className={`service-option picked ${service === "current" && config?.configurationStatus === "broken" ? "bad" : ""}`} aria-haspopup="dialog" title={service === "current" && config ? t(config.statusMessage) : undefined}
-          aria-label={t("{tool} 使用服务：{name}，点击切换", { tool: meta.name, name: pickedTitle })} disabled={disabled} onClick={() => setPicker("service")}>
-          <span className="config-label">{t("使用服务")}</span><span className="service-text"><strong>{pickedTitle}</strong>{metaLine(pickedParts, pickedMono)}</span>
-          <span className="service-switch">{t("切换")}</span>
-        </button>
+        {/* 服务：直接列出全部选项，哪一项「当前生效」、启动时用哪一项一眼可见 */}
+        <div className="service-head">
+          <span className="config-label">{t("使用服务")}</span>
+          <button type="button" className="site service-manage" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("管理密钥 →")}</button>
+        </div>
+        <div className="service-list inline" role="radiogroup" aria-label={t("{tool} 使用服务", { tool: meta.name })} ref={serviceListRef}>
+          {option("current", <UiIcon name="settings"/>, t("沿用现有配置"), [currentText, config?.currentModel], { bad: config?.configurationStatus === "broken" })}
+          {option("official", <meta.Icon className={`brand brand-${tool}`}/>, t("官方服务"), [t("使用你自己的官方账号登录")])}
+          {props.profiles.map(p => option(p.id, <UiIcon name="key"/>, profileTitle(p),
+            !p.hasKey ? [t("缺少密钥，请到密钥页补上")]
+              : !supportsTool(p, tool) ? [t("没有填 {tool} 地址", { tool: meta.cli })]
+              : [p.maskedKey, modelOf(tool, p) || (p.custom ? t("客户端默认模型") : "")],
+            { off: !p.hasKey || !supportsTool(p, tool), monoFirst: p.hasKey && supportsTool(p, tool), edit: true }))}
+          {invalidService && option(service, <UiIcon name="key"/>, t("所选密钥已失效"), [t("请重新选择一项")], { off: true, bad: true })}
+        </div>
 
         {/* 模型：只在选了 zAI 密钥时出现（官方服务、保持现有配置都不由这里写模型） */}
         {selected?.hasKey && <button type="button" className="workdir-row model-row" aria-haspopup="dialog" aria-label={t("{tool} 模型：{model}，点击更换", { tool: meta.name, model: model || t(selected.custom ? "客户端默认" : "未设置") })} disabled={disabled} onClick={() => openModel(tool, selected)}>
@@ -612,20 +632,6 @@ export function Launcher(props: {
 
       {setupTarget && <PickerDialog title={t("{name} 安装与更新", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
         <ClientSetup key={setupTarget} target={setupTarget} installed={!!scan?.installations.find(i => i.target === setupTarget)?.installed} refresh={refresh} disabled={disabled} />
-      </PickerDialog>}
-
-      {picker === "service" && <PickerDialog title={t("{tool} 使用的服务", { tool: meta.name })} onClose={() => setPicker(null)}
-        footer={<button className="site" disabled={disabled} onClick={() => { setPicker(null); props.onKeys(tool); }}>{t("管理密钥 →")}</button>}>
-        <div className="service-list" role="radiogroup" aria-label={t("{tool} 使用服务", { tool: meta.name })}>
-          {option("current", keepTitle, [t("不改动配置文件"), config?.currentModel], { bad: config?.configurationStatus === "broken" })}
-          {option("official", t("官方服务"), [t("使用你自己的官方账号登录")], { current: config?.configurationStatus === "official" })}
-          {props.profiles.map(p => option(p.id, profileTitle(p),
-            !p.hasKey ? [t("缺少密钥，请到密钥页补上")]
-              : !supportsTool(p, tool) ? [t("没有填 {tool} 地址", { tool: meta.cli })]
-              : [p.maskedKey, modelOf(tool, p) || (p.custom ? t("客户端默认模型") : "")],
-            { current: p.id === config?.activeProfileId, off: !p.hasKey || !supportsTool(p, tool), monoFirst: p.hasKey && supportsTool(p, tool) }))}
-          {invalidService && option(service, t("所选密钥已失效"), [t("请重新选择一项")], { off: true })}
-        </div>
       </PickerDialog>}
 
       {picker === "workdir" && <PickerDialog title={t("CLI 工作目录")} onClose={() => setPicker(null)}>

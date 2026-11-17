@@ -176,6 +176,18 @@ export const DICT: Record<string, [string, string]> = {
   "实际服务待确认": ["實際服務待確認", "Actual service unconfirmed"],
   "配置文件需要修复": ["設定檔需要修復", "Config file needs repair"],
   "配置文件损坏": ["設定檔損壞", "Config file is broken"],
+  "沿用现有配置": ["沿用現有設定", "Keep current config"],
+  "当前生效": ["目前生效", "In use now"],
+  "正在读取当前配置…": ["正在讀取目前設定…", "Reading current config…"],
+  "现在用的是「{name}」": ["現在用的是「{name}」", "Currently using “{name}”"],
+  "现在用的是 zAI 密钥": ["現在用的是 zAI 密鑰", "Currently using a zAI key"],
+  "现在用的是 zAI 密钥（未保存在本工具）": ["現在用的是 zAI 密鑰（未儲存在本工具）", "Currently using a zAI key (not saved in this app)"],
+  "现在用的是官方服务": ["現在用的是官方服務", "Currently using the official service"],
+  "现在还没有配置任何服务": ["現在還沒有設定任何服務", "No service is configured yet"],
+  "现在用的是自定义服务": ["現在用的是自訂服務", "Currently using a custom service"],
+  "识别不出现在用的服务，启动后请在应用内确认": ["識別不出現在用的服務，啟動後請在應用程式內確認", "Couldn’t identify the current service; check in the app after launch"],
+  "配置文件损坏，需要先修复": ["設定檔損壞，需要先修復", "Config file is broken and needs repair first"],
+  "未能识别的服务": ["未能識別的服務", "Unrecognized service"],
 
   // —— 首次读取遮罩、引导卡片 ——
   "先读取本机配置": ["先讀取本機設定", "Read local config first"],
