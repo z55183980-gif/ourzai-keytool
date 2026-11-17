@@ -22,6 +22,11 @@
 .compact-status .status-card-body { flex-direction: row; align-items: center; justify-content: flex-start; overflow: visible; }
 .compact-status strong { font-size: 12px; }
 .launcher-pages .compact-status .readiness-action { min-height: 28px; padding: 2px 4px; font-size: 12px; background: transparent !important; --button-hover-bg: transparent; }
+/* 一切正常这一行：左侧「✓ 一切正常 · 重新检查」，右侧是「启动后遇到问题？」这类次要动作 */
+.compact-status .status-card-body { gap: 4px; }
+.compact-status .status-card-body > .readiness-action { margin-left: 4px; }
+.launcher-pages .compact-status .readiness-action.status-help { margin-left: auto; color: #5b677c; }
+.launcher-pages .compact-status .readiness-action.status-help:hover:not(:disabled) { color: #3051c3; }
 .launcher-pages .repair-dismiss {
   position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
   color: #6b778c; background: transparent !important; border: 0 !important; border-radius: 7px; box-shadow: none !important;

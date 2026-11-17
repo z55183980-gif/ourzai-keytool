@@ -19,41 +19,34 @@ function handler(file, name, bindings) {
   return new Function(...Object.keys(bindings), `${js}; return handler;`)(...Object.values(bindings));
 }
 
-test('a stale key selection offers an enabled service picker instead of a disabled launch', () => {
-  let opened;
+test('launch button never waits on a hidden service selection', () => {
   const main = handler('../src/Launcher.tsx', 'main', {
-    missing: false, invalidService: true, disabled: false,
-    t: s => s, focusServices: () => { opened = 'service'; },
-  });
-  assert.equal(main.label, '重新选择服务');
-  assert.equal(main.off, false);
-  main.run();
-  assert.equal(opened, 'service');
-});
-
-test('inline service list retains the unavailable-key wording and hides duplicate rows', () => {
-  const source = fs.readFileSync(new URL('../src/Launcher.tsx', import.meta.url), 'utf8');
-  assert.ok(!source.includes('所选密钥已失效'));
-  assert.ok(source.includes('invalidService && !selected && option('));
-});
-
-test('pending changes retain the launch button without a save action', () => {
-  const main = handler('../src/Launcher.tsx', 'main', {
-    missing:false, invalidService:false, needsSave:true, blockerAction:null,
-    errors:[], props:{busy:false}, t:s=>s, targetName:()=> 'Codex CLI', target:'codex-cli', mode:'cli', launchDisabled:true,
+    missing:false, blockerAction:null, blocker:null,
+    errors:[], t:s=>s, targetName:()=> 'Codex CLI', target:'codex-cli', mode:'cli', launchDisabled:false,
   });
   assert.equal(main.label,'启动 {name}');
-  assert.equal(main.off,true);
+  assert.equal(main.off,false);
+  assert.equal(main.title,undefined);
 });
 
-for (const succeeds of [true,false]) test('row enable writes the clicked key without launching, preference success='+succeeds, async () => {
+test('service list has a single live state: no separate keep-current row or pending-enable state', () => {
+  const source = fs.readFileSync(new URL('../src/Launcher.tsx', import.meta.url), 'utf8');
+  assert.ok(!source.includes('所选密钥已失效'));
+  assert.ok(!source.includes('option("current"'));
+  assert.ok(!source.includes('needsSave'));
+  assert.ok(!source.includes('invalidService'));
+  assert.ok(!source.includes('`${tool}Service`'));
+  assert.ok(source.includes('{live !== value && <button type="button" className="service-enable"'));
+});
+
+test('row switch writes the clicked key without launching or saving a selection preference', async () => {
   const calls=[];
   const activate = handler('../src/Launcher.tsx','activateService',{
     prefs:{}, savingRef:{current:false}, activatingRef:{current:false}, props:{busy:false,onSaveConfiguration:async(...args)=>calls.push(['write',...args])},
-    service:'old',tool:'codex',mode:'desktop',setActivating:()=>{},setRepair:()=>{},save:async patch=>{calls.push(['select',patch]);return succeeds;},
+    tool:'codex',mode:'desktop',setActivating:()=>{},setRepair:()=>{},save:async patch=>{calls.push(['select',patch]);return true;},
   });
   await activate('clicked-key');
-  assert.deepEqual(calls,succeeds ? [['select',{codexService:'clicked-key'}],['write','codex','desktop','clicked-key']] : [['select',{codexService:'clicked-key'}]]);
+  assert.deepEqual(calls,[['write','codex','desktop','clicked-key']]);
 });
 
 for (const patch of [{codexModel: 'new-model', codexEffort: 'high'}, {claudeModel: 'new-claude'}]) {
@@ -72,10 +65,12 @@ for (const patch of [{codexModel: 'new-model', codexEffort: 'high'}, {claudeMode
   });
 }
 
-test('current policy stays read-only even when a saved profile is recognized and its model differs', async () => {
-  const serviceFor = handler('../src/Launcher.tsx', 'serviceFor', {prefs:{codexService:'current'},matchedService:()=> 'saved-key'});
+test('launch stays read-only and always uses the live configuration', async () => {
+  const source = fs.readFileSync(new URL('../src/Launcher.tsx', import.meta.url), 'utf8');
+  assert.ok(source.includes('const LIVE = "current";'));
+  assert.ok(source.includes('props.onLaunch(tool, mode, LIVE, prefs.projectDirectory)'));
   const calls=[];
-  await launchWithConfiguration('codex','cli',serviceFor('codex'),'C:\\fixture', {
+  await launchWithConfiguration('codex','cli','current','C:\fixture', {
     profileId:'saved-key',baseUrl:'https://relay.example/v1',model:'old-preference',reasoningEffort:'medium',
   }, {
     validateLaunch:async()=>{},
@@ -83,8 +78,20 @@ test('current policy stays read-only even when a saved profile is recognized and
     applyConfig:async()=>{throw Error('must not write');},revertToOfficial:async()=>{throw Error('must not revert');},
     launchClient:async()=>{calls.push('launch');return {message:'fixture'};},
   },()=>{throw Error('must not configure');});
-  assert.equal(serviceFor('codex'),'current');
   assert.deepEqual(calls,['launch']);
+});
+
+test('changing the live key model rewrites its config with the freshly saved profile', async () => {
+  const profile = {id:'k',name:'main',codexModel:'old',codexEffort:'medium',claudeModel:''};
+  const fresh = {...profile,codexModel:'new'};
+  const writes=[];
+  const save = handler('../src/App.tsx', 'saveModel', {
+    profiles:[profile], api:{saveProfile:async()=>{},listProfiles:async()=>[fresh]},
+    setBusy:()=>{}, log:()=>{}, t:s=>s, effortLabel:s=>s, setProfiles:()=>{}, setToast:()=>{},
+    runClientAction:async(...args)=>{writes.push(args);return true;},
+  });
+  assert.equal(await save('k', {codexModel:'new',codexEffort:'medium'}, {tool:'codex',mode:'cli'}), true);
+  assert.deepEqual(writes,[['codex','cli','k','','save',fresh]]);
 });
 
 test('selected duplicate profile and tool scope are supplied to every launch verification', async () => {

@@ -22,8 +22,8 @@ export async function runTrayAction(action: TrayAction, prefs: LauncherPreferenc
   if (!deps.consented(tool)) throw Error("请先读取本机配置，再使用托盘快捷操作");
   if (action.kind === "switchKey") return;
   const mode = prefs[`${tool}Mode`];
-  const service = prefs[`${tool}Service`];
-  const ok = await deps.launch(tool, mode, service, prefs.projectDirectory);
+  // 启动只用配置文件里当前生效的服务，不读旧的「所选服务」偏好
+  const ok = await deps.launch(tool, mode, "current", prefs.projectDirectory);
   if (ok && mode === "cli") await deps.save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0, 8) });
 }
 

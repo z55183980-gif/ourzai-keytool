@@ -504,3 +504,17 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 /* 启动按钮在卡片顶部（紧跟启动方式），下面的提示居中跟在说明后面 */
 .tool-hero .launch-warning { margin-top: -6px; text-align: center; }
 .tool-hero .client-help-link { margin: -4px 0 0; }
+
+/* 工作目录：启动按钮上方的一行文字，不带标题和卡片 */
+.launcher-pages .tool-hero .workdir-inline { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; margin: 0 0 -6px; padding: 2px 4px; border-radius: 8px; font-size: 12.5px; color: var(--dim); text-align: left; }
+.launcher-pages .tool-hero .workdir-inline:hover:not(:disabled) { background: none !important; text-decoration: none; color: #2a3446; }
+.workdir-inline .ui-icon { width: 15px; height: 15px; flex-shrink: 0; color: var(--dim); }
+.workdir-inline-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workdir-inline-switch { flex-shrink: 0; color: var(--accent); }
+.workdir-inline:hover:not(:disabled) .workdir-inline-switch { text-decoration: underline; }
+
+/* 当前配置不对应列表里任何一项时，列表上方的一句说明 */
+.service-note { margin: 0 4px 6px; padding: 8px 12px; border-radius: 12px; font-size: 12px; line-height: 1.6; color: #56667c; background: rgba(110, 124, 160, .08); }
+.service-note.bad { color: #85590f; background: var(--warn-bg); }
+.service-note span { display: block; }
+.service-note small { display: block; margin-top: 2px; font-size: 11.5px; color: #7a8599; }

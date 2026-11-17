@@ -428,17 +428,18 @@ export default function App() {
     }
   };
 
-  const runClientAction = async (tool: ToolId, mode: LaunchMode, service: string, directory: string, action: "save" | "launch"): Promise<boolean> => {
+  /** fresh：刚保存过的密钥（如换模型后），避免用到本次渲染里还没更新的 profiles */
+  const runClientAction = async (tool: ToolId, mode: LaunchMode, service: string, directory: string, action: "save" | "launch", fresh?: Profile): Promise<boolean> => {
     if (launchLock.current || busy) return false;
     launchLock.current = true;
     setBusy(action === "save" ? "apply" : "launch");
     let changed = false;
     try {
-      const p = profiles.find(profile => profile.id === service);
+      const p = fresh?.id === service ? fresh : profiles.find(profile => profile.id === service);
       const claudeAliases = p?.custom
         ? { opus: "", sonnet: "", haiku: "" }
         : { opus: aliasOpus, sonnet: aliasSonnet, haiku: aliasHaiku };
-      log("cmd", t(action === "save" ? "保存并写入 {name} 配置" : "启动 {name}", { name: `${tool === "claude" ? "Claude" : "Codex"} ${mode === "cli" ? "CLI" : t("桌面版")}` }) + ` · ${service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : p?.name ?? t("所选密钥")}`);
+      log("cmd", t(action === "save" ? "保存并写入 {name} 配置" : "启动 {name}", { name: `${tool === "claude" ? "Claude" : "Codex"} ${mode === "cli" ? "CLI" : t("桌面版")}` }) + ` · ${service === "current" ? t("当前配置") : service === "official" ? t("官方服务") : p?.name ?? t("所选密钥")}`);
       if (!["current", "official"].includes(service) && !p?.hasKey) throw new Error(t("所选密钥不可用，请重新选择"));
       const request = {
         profileId: service,
@@ -536,7 +537,7 @@ export default function App() {
   };
 
   /** 工具页「更换模型」：只改这把密钥给某个工具用的模型，Key 和名称不动 */
-  const saveModel = async (id: string, patch: { claudeModel?: string; codexModel?: string; codexEffort?: string }) => {
+  const saveModel = async (id: string, patch: { claudeModel?: string; codexModel?: string; codexEffort?: string }, apply?: { tool: ToolId; mode: LaunchMode }) => {
     const p = profiles.find(x => x.id === id);
     if (!p) return false;
     setBusy("save");
@@ -548,8 +549,14 @@ export default function App() {
         codexBaseUrl: p.codexBaseUrl, claudeBaseUrl: p.claudeBaseUrl,
         ...patch,
       });
-      setProfiles(await api.listProfiles().catch(() => profiles));
-      setToast({ kind: "ok", text: t("模型选择已保存，请点击密钥右侧的启用按钮写入配置") });
+      const list = await api.listProfiles().catch(() => profiles);
+      setProfiles(list);
+      // 这把密钥正在生效时，换完模型直接写入配置，不需要再手动「启用」
+      if (apply) {
+        setBusy(null);
+        return await runClientAction(apply.tool, apply.mode, id, "", "save", list.find(x => x.id === id));
+      }
+      setToast({ kind: "ok", text: t("模型选择已保存") });
       return true;
     } catch (e) {
       setToast({ kind: "err", text: String(e) });
@@ -558,14 +565,14 @@ export default function App() {
       setBusy(null);
     }
   };
-  /** 把配置文件里正在用的 zAI 密钥收进密钥列表 */
-  const adoptKey = async (tool: ToolId) => {
+  /** 把配置文件里正在用、没保存在本工具的密钥（zAI 或第三方）加入密钥列表 */
+  const adoptKey = async (tool: ToolId, desktop = false) => {
     if (busy) return;
     setBusy("save");
-    log("cmd", `${t("收进密钥列表")} · ${t("{tool} 配置里的密钥", { tool: tool === "claude" ? "Claude" : "Codex" })}`);
+    log("cmd", `${t("加入密钥")} · ${t("{tool} 配置里的密钥", { tool: tool === "claude" ? (desktop ? t("{name} 桌面版", { name: "Claude" }) : "Claude") : "Codex" })}`);
     try {
-      const r = await api.adoptCurrentKey(tool, baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy);
-      log("ok", r.existed ? t("这把密钥已经在列表里：「{name}」", { name: t(r.name) }) : t("已收进密钥列表：「{name}」，测试可用", { name: t(r.name) }));
+      const r = await api.adoptCurrentKey(tool, baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, desktop);
+      log("ok", r.existed ? t("这把密钥已经在列表里：「{name}」", { name: t(r.name) }) : t("已加入密钥列表：「{name}」，测试可用", { name: t(r.name) }));
       await reload(baseUrl);
     } catch (e) {
       log("err", t(String(e).replace(/^Error:\s*/, "")));

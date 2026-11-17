@@ -96,6 +96,10 @@ export interface CodexEnv {
   activeProfileId: string | null;
   /** 配置指向本网关、带着一把 Key，但没保存在本工具 */
   unsavedGatewayKey: boolean;
+  /** 配置里当前生效的密钥（掩码），zAI 或第三方都算；读不到为 null */
+  currentKeyMasked: string | null;
+  /** 当前生效的地址和密钥都读得到、且没保存在本工具：可以加入密钥列表 */
+  adoptable: boolean;
   configurationStatus: ConfigurationStatus;
   statusMessage: string;
 }
@@ -110,6 +114,10 @@ export interface ClaudeEnv {
   activeProfileId: string | null;
   /** 配置指向本网关、带着一把 Key，但没保存在本工具 */
   unsavedGatewayKey: boolean;
+  /** 配置里当前生效的密钥（掩码），zAI 或第三方都算；读不到为 null */
+  currentKeyMasked: string | null;
+  /** 当前生效的地址和密钥都读得到、且没保存在本工具：可以加入密钥列表 */
+  adoptable: boolean;
   configurationStatus: ConfigurationStatus;
   statusMessage: string;
 }

@@ -112,7 +112,7 @@ export function OutputConsole(props: {
         onMouseUp={() => { if (prompt && !window.getSelection()?.toString()) inputRef.current?.focus(); }}>
         <div role="log" aria-live="polite">
           {!!props.dropped && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("已丢弃更早的 {n} 条记录（最多保留 {max} 条）", { n: props.dropped, max: MAX_LOG_LINES })}</span></div>}
-          {props.lines.length === 0 && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("还没有记录。体检、写入配置、启动和 zAI 分析的过程会记在这里。")}</span></div>}
+          {props.lines.length === 0 && <div className="console-line info"><span className="console-mark" aria-hidden="true">{MARK.info}</span><span className="console-text">{t("还没有记录。体检、写入配置、启动和 AI 分析的过程会记在这里。")}</span></div>}
           {(expanded ? props.lines : props.lines.slice(-3)).map(l => (
             <div key={l.id} className={`console-line ${l.kind}`}>
               {l.kind !== "path" && <span className="console-time">{l.time}</span>}
@@ -127,9 +127,9 @@ export function OutputConsole(props: {
       </div>
         {prompt && <label className="console-prompt">
           <span className="console-ps" aria-hidden="true">{t("问题诊断")}</span>
-          {prompt?.busy ? <span className="console-wait">{t("zAI 正在帮你看…")}<span className="console-cursor" /></span>
+          {prompt?.busy ? <span className="console-wait">{t("AI 正在帮你看…")}<span className="console-cursor" /></span>
             : prompt?.enabled ? <input ref={inputRef} className="console-input" value={text} maxLength={500} spellCheck={false} autoComplete="off"
-                placeholder={prompt.placeholder} aria-label={t("把报错粘贴到这里，回车让 zAI 帮你看看")}
+                placeholder={prompt.placeholder} aria-label={t("把报错粘贴到这里，回车让 AI 帮你看看")}
                 onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") submit(); }} />
             : <span className="console-wait">{prompt?.placeholder}{prompt?.unlock
                 ? <button type="button" className="console-btn console-action" disabled={props.busy} onClick={prompt.unlock.run}>{prompt.unlock.label}</button>

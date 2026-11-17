@@ -336,7 +336,7 @@ fn parse_ask(v: Option<&Value>, limit: &impl Fn(&str, usize) -> usize) -> Option
 
 // ——————————— 调用网关 ———————————
 
-const FAILED: &str = "zAI 暂时看不了，稍后重试";
+const FAILED: &str = "AI 暂时看不了，稍后重试";
 
 /// 选择配置指定的诊断模型。
 ///

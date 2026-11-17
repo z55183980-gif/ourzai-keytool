@@ -1296,6 +1296,9 @@ pub struct AdoptRequest {
     pub tool: health::Tool,
     pub base_url: String,
     pub ignore_proxy: bool,
+    /// Claude 桌面版：读它自己的第三方推理配置，而不是 settings.json
+    #[serde(default)]
+    pub desktop: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1307,60 +1310,92 @@ pub struct AdoptResult {
     pub existed: bool,
 }
 
-/// 把配置文件里正在用、但没保存在本工具的 zAI 密钥收进密钥列表。
-/// 密钥只在后端读出、测试、存进系统凭据库，不经过前端；测试不通过就不收录。
+/// 读出配置文件里当前生效的地址和密钥（zAI 网关或第三方都可以）
+fn live_credential(tool: health::Tool, desktop: bool) -> Result<Option<detect::LiveCredential>> {
+    use health::Tool;
+    Ok(match (tool, desktop) {
+        (Tool::Codex, _) => {
+            let text = read_text_optional(&paths::config_path()?)?;
+            let auth = read_text_optional(&paths::auth_path()?)?;
+            detect::live_codex(text.as_deref(), auth.as_deref())
+        }
+        (Tool::Claude, false) => detect::live_claude(read_text_optional(&paths::claude_settings_path()?)?.as_deref()),
+        (Tool::Claude, true) => match claude_desktop::applied()? {
+            claude_desktop::Applied::Config(path) => read_text_optional(&path)?.as_deref().and_then(detect::live_claude_desktop),
+            _ => None,
+        },
+    })
+}
+
+/// 收录时怎么存：指向 zAI 网关的存成 zAI 密钥；其他地址存成「其他服务」密钥，地址记在对应工具上
+fn adopted_profile(tool: health::Tool, desktop: bool, live: &detect::LiveCredential, gateway_openai: &str) -> (state::Profile, bool) {
+    use health::Tool;
+    let codex = matches!(tool, Tool::Codex);
+    let gateway = if codex { gateway_openai.to_string() } else { claude_config::derive_anthropic_base_url(gateway_openai) };
+    let is_gateway = health::host(&live.base_url).is_some() && health::host(&live.base_url) == health::host(&gateway);
+    let base = live.base_url.trim().trim_end_matches('/').to_string();
+    let name = if is_gateway {
+        match (tool, desktop) {
+            (Tool::Codex, _) => crate::ui_lang::pick("Codex 配置里的密钥", "Codex 設定裡的密鑰", "Key from Codex config"),
+            (Tool::Claude, false) => crate::ui_lang::pick("Claude 配置里的密钥", "Claude 設定裡的密鑰", "Key from Claude config"),
+            (Tool::Claude, true) => crate::ui_lang::pick("Claude 桌面版配置里的密钥", "Claude 桌面版設定裡的密鑰", "Key from Claude desktop config"),
+        }
+        .to_string()
+    } else {
+        health::host(&base).unwrap_or_else(|| base.clone())
+    };
+    let profile = state::Profile {
+        id: String::new(),
+        name,
+        codex_model: if codex { live.model.clone() } else { String::new() },
+        codex_effort: String::new(),
+        claude_model: if codex { String::new() } else { live.model.clone() },
+        gateway_token_id: None,
+        gateway_account: None,
+        codex_base_url: if !is_gateway && codex { base.clone() } else { String::new() },
+        claude_base_url: if !is_gateway && !codex { base } else { String::new() },
+    };
+    (profile, is_gateway)
+}
+
+/// 把配置文件里正在用、但没保存在本工具的密钥收进密钥列表：zAI 网关的，或第三方服务的。
+/// 密钥只在后端读出、测试、存进系统凭据库，不经过前端；测试明确失败（密钥无效、连不上）就不收录。
 #[tauri::command]
 pub async fn adopt_current_key(req: AdoptRequest) -> Result<AdoptResult> {
     crate::updates::ensure_supported()?;
-    use health::Tool;
-    let openai_base = req.base_url.trim_end_matches('/').to_string();
-    let current = match req.tool {
-        Tool::Claude => {
-            let text = read_text_optional(&paths::claude_settings_path()?)?;
-            health::current_claude(text.as_deref(), &claude_config::derive_anthropic_base_url(&openai_base))
-        }
-        Tool::Codex => {
-            let text = read_text_optional(&paths::config_path()?)?;
-            let auth = read_text_optional(&paths::auth_path()?)?;
-            health::current_codex(text.as_deref(), auth.as_deref(), &openai_base, PROVIDER_ID)
-        }
-    }
-    .ok_or_else(|| AppError::Other("当前配置里没有可以收录的 zAI 密钥".into()))?;
+    let gateway_openai = req.base_url.trim_end_matches('/').to_string();
+    let live = live_credential(req.tool, req.desktop)?
+        .ok_or_else(|| AppError::Other("当前配置里没有可以加入的密钥".into()))?;
 
     for p in state::load()?.profiles {
-        if state::load_profile_key(&p.id)?.as_deref() == Some(current.key.as_str()) {
+        if state::load_profile_key(&p.id)?.as_deref() == Some(live.key.as_str()) {
             return Ok(AdoptResult { id: p.id, name: p.name, existed: true });
         }
     }
 
-    let test = api::list_models(&openai_base, &current.key, req.ignore_proxy)
+    let (profile, is_gateway) = adopted_profile(req.tool, req.desktop, &live, &gateway_openai);
+    // 测试用的 OpenAI 兼容地址：zAI 用网关；第三方 Codex 用它自己的地址，Claude 的 Anthropic 地址补上 /v1
+    let test_base = if is_gateway {
+        gateway_openai.clone()
+    } else if profile.codex_base_url.is_empty() {
+        format!("{}/v1", profile.claude_base_url.trim_end_matches("/v1"))
+    } else {
+        profile.codex_base_url.clone()
+    };
+    let test = api::list_models(&test_base, &live.key, req.ignore_proxy)
         .await
         .map_err(|_| AppError::Network("连不上服务器，没有收录，稍后再试".into()))?;
     if !test.ok {
-        return Err(AppError::Other(if matches!(test.status, 401 | 403) {
-            "配置里的这把密钥无效或已停用，没有收录".into()
-        } else {
-            format!("服务暂时不可用（{}），没有收录，稍后再试", test.status)
-        }));
+        if matches!(test.status, 401 | 403) {
+            return Err(AppError::Other("配置里的这把密钥无效或已停用，没有收录".into()));
+        }
+        // 第三方服务不一定提供 /models：客户端正在用它，只要不是明确的认证失败就收录
+        if is_gateway {
+            return Err(AppError::Other(format!("服务暂时不可用（{}），没有收录，稍后再试", test.status)));
+        }
     }
 
-    let (name, claude_model, codex_model) = match req.tool {
-        Tool::Claude => (crate::ui_lang::pick("Claude 配置里的密钥", "Claude 設定裡的密鑰", "Key from Claude config"), current.model, String::new()),
-        Tool::Codex => (crate::ui_lang::pick("Codex 配置里的密钥", "Codex 設定裡的密鑰", "Key from Codex config"), String::new(), current.model),
-    };
-    let saved = state::upsert_profile(
-        state::Profile {
-            id: String::new(),
-            name: name.into(),
-            codex_model,
-            codex_effort: String::new(),
-            claude_model,
-            gateway_token_id: None,
-            gateway_account: None,
-            ..Default::default()
-        },
-        Some(&current.key),
-    )?;
+    let saved = state::upsert_profile(profile, Some(&live.key))?;
     Ok(AdoptResult { id: saved.id, name: saved.name, existed: false })
 }
 
@@ -1474,7 +1509,7 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
     // 诊断用的是 profile_id 那把 zAI 密钥。被体检的正是它、而它连不上或无效时，诊断也发不出去；
     // 被体检的是别的服务时（比如其他服务的密钥坏了），正是该让 zAI 看看的时候
     if req.health.service == req.profile_id && issues.iter().any(|i| i.id == "K1" || i.id == "K2") {
-        return Err(AppError::Other("先处理密钥或网络问题，才能让 zAI 帮你看看".into()));
+        return Err(AppError::Other("先处理密钥或网络问题，才能让 AI 帮你看看".into()));
     }
     let openai_base = req.health.base_url.trim_end_matches('/').to_string();
     let desktop = req.health.claude_desktop();
@@ -1538,4 +1573,36 @@ pub async fn prepare_diagnosis(req: &DiagnoseRequest, cache: &HealthCache) -> Re
         key,
         ignore_proxy: req.health.ignore_proxy,
     })
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::*;
+    const GATEWAY: &str = "https://api.ourzai.com/v1";
+
+    fn live(base: &str) -> detect::LiveCredential {
+        detect::LiveCredential { base_url: base.into(), key: "k".into(), model: "m".into() }
+    }
+
+    #[test]
+    fn gateway_keys_are_saved_as_zai_profiles() {
+        let (p, gateway) = adopted_profile(health::Tool::Codex, false, &live("https://api.ourzai.com/v1/"), GATEWAY);
+        assert!(gateway);
+        assert!(!p.is_custom());
+        assert_eq!(p.codex_model, "m");
+        let (p, gateway) = adopted_profile(health::Tool::Claude, true, &live(&claude_config::derive_anthropic_base_url(GATEWAY)), GATEWAY);
+        assert!(gateway);
+        assert!(!p.is_custom());
+        assert_eq!(p.claude_model, "m");
+    }
+
+    #[test]
+    fn third_party_keys_keep_their_endpoint_on_the_matching_tool() {
+        let (p, gateway) = adopted_profile(health::Tool::Codex, false, &live("https://relay.example/v1/"), GATEWAY);
+        assert!(!gateway);
+        assert_eq!((p.name.as_str(), p.codex_base_url.as_str(), p.claude_base_url.as_str()), ("relay.example", "https://relay.example/v1", ""));
+        let (p, gateway) = adopted_profile(health::Tool::Claude, false, &live("https://relay.example"), GATEWAY);
+        assert!(!gateway);
+        assert_eq!((p.codex_base_url.as_str(), p.claude_base_url.as_str(), p.claude_model.as_str()), ("", "https://relay.example", "m"));
+    }
 }

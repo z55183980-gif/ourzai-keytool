@@ -33,7 +33,7 @@ import type {
   LaunchTarget,
 } from "./types";
 
-export type Scenario = "configured" | "fresh" | "legacy" | "broken" | "nocodex" | "conflict";
+export type Scenario = "configured" | "fresh" | "legacy" | "broken" | "nocodex" | "conflict" | "thirdparty";
 
 export function activeScenario(): Scenario | null {
   if (!import.meta.env.DEV) return null;
@@ -132,7 +132,7 @@ export function mockMarkConfigRead(tool: ToolId) { if (!configReadTools.includes
 export function mockEnvFor(s: Scenario, tools?: ToolId[]): Environment {
   const env = mockEnv(s);
   for (const slot of ["codex", "claude", "claudeDesktop"] as const) Object.assign(env[slot], appliedConfig[slot]);
-  const notRead = { homeExists: false, currentBaseUrl: null, currentModel: null, managedByUs: false, activeProfileId: null, unsavedGatewayKey: false, configurationStatus: "unknown" as const, statusMessage: "尚未读取（用户还没同意读取这个工具的配置）" };
+  const notRead = { homeExists: false, currentBaseUrl: null, currentModel: null, managedByUs: false, activeProfileId: null, unsavedGatewayKey: false, currentKeyMasked: null, adoptable: false, configurationStatus: "unknown" as const, statusMessage: "尚未读取（用户还没同意读取这个工具的配置）" };
   if (tools && !tools.includes("claude")) env.claude = { ...env.claude, ...notRead, settingsState: "missing" as never };
   if (tools && !tools.includes("codex")) env.codex = { ...env.codex, ...notRead, configState: "missing" as never, authState: "Missing", currentReasoningEffort: null, residue: [] };
   return env;
@@ -166,29 +166,37 @@ export function mockEnvOverrides(s: Scenario): string[] {
 
 export async function mockAdopt(s: Scenario, tool: ToolId): Promise<AdoptResult> {
   await new Promise(r => setTimeout(r, 600));
+  if (s === "thirdparty" && tool === "codex") {
+    const id = mockSaveProfile(s, { id: "", name: "relay.example.com", apiKey: "sk-relay-7c21", codexModel: "gpt-5.4", codexEffort: "", claudeModel: "", codexBaseUrl: "https://relay.example.com/v1" } as never);
+    adopted[tool] = id;
+    return { id, name: "relay.example.com", existed: false };
+  }
   const id = mockSaveProfile(s, { id: "", name: `${tool === "claude" ? "Claude" : "Codex"} 配置里的密钥`, apiKey: "sk-preview-9f3e", codexModel: "", codexEffort: "", claudeModel: tool === "claude" ? "claude-opus-4-8" : "" });
   adopted[tool] = id;
   return { id, name: `${tool === "claude" ? "Claude" : "Codex"} 配置里的密钥`, existed: false };
 }
 
-/** 场景数据里 unsavedGatewayKey 可省略，默认 false */
-type Loose<T> = Omit<T, "unsavedGatewayKey"> & { unsavedGatewayKey?: boolean };
+/** 场景数据里 unsavedGatewayKey / currentKeyMasked / adoptable 可省略 */
+type Loose<T> = Omit<T, "unsavedGatewayKey" | "currentKeyMasked" | "adoptable"> & { unsavedGatewayKey?: boolean; currentKeyMasked?: string | null; adoptable?: boolean };
+const fill = <T extends { unsavedGatewayKey?: boolean; currentKeyMasked?: string | null; adoptable?: boolean }>(e: T) =>
+  ({ ...e, unsavedGatewayKey: e.unsavedGatewayKey ?? false, currentKeyMasked: e.currentKeyMasked ?? null, adoptable: e.adoptable ?? false });
 
 export function mockEnv(s: Scenario): Environment {
   const base = mockEnvBase(s);
   const env: Environment = {
-    codex: { ...base.codex, unsavedGatewayKey: base.codex.unsavedGatewayKey ?? false },
-    claude: { ...base.claude, unsavedGatewayKey: base.claude.unsavedGatewayKey ?? false },
+    codex: fill(base.codex),
+    claude: fill(base.claude),
     // 桌面版的第三方推理配置：演示里一律还没启用（用官方登录）
     claudeDesktop: {
       ...base.claude, home: "C:\Users\you\AppData\Local\Claude-3p", settingsState: "missing",
       currentBaseUrl: null, currentModel: null, managedByUs: false, activeProfileId: null, unsavedGatewayKey: false,
+      currentKeyMasked: null, adoptable: false,
       configurationStatus: "official", statusMessage: "未启用第三方推理，使用 Claude 官方登录",
     },
   };
   for (const tool of ["claude", "codex"] as const) {
     const id = adopted[tool];
-    if (id) env[tool] = { ...env[tool], activeProfileId: id, unsavedGatewayKey: false, configurationStatus: "configured" } as never;
+    if (id) env[tool] = { ...env[tool], activeProfileId: id, unsavedGatewayKey: false, adoptable: false, configurationStatus: "configured" } as never;
   }
   return env;
 }
@@ -238,6 +246,28 @@ function mockEnvBase(s: Scenario): { codex: Loose<CodexEnv>; claude: Loose<Claud
         claude: claudeConfigured,
       };
 
+    // Codex 正在用第三方中转站的密钥，没保存在本工具
+    case "thirdparty":
+      return {
+        codex: {
+          homeExists: true,
+          home: HOME_CODEX,
+          configState: "ok",
+          authState: "ApiKeyOnly",
+          currentBaseUrl: "https://relay.example.com/v1",
+          currentModel: "gpt-5.4",
+          currentReasoningEffort: "medium",
+          residue: [],
+          managedByUs: false,
+          activeProfileId: null,
+          currentKeyMasked: "sk-••••••••7c21",
+          adoptable: true,
+          configurationStatus: "custom" as const,
+          statusMessage: "使用其他服务地址",
+        },
+        claude: claudeConfigured,
+      };
+
     case "fresh":
       return {
         codex: {
@@ -274,7 +304,7 @@ function mockEnvBase(s: Scenario): { codex: Loose<CodexEnv>; claude: Loose<Claud
           statusMessage: "尚未确认客户端配置和登录状态",
         },
         // 旧版手动配过 zAI：配置里有 Key，但没保存在本工具
-        claude: { ...claudeConfigured, managedByUs: false, activeProfileId: null, unsavedGatewayKey: true, configurationStatus: "unknown" as const, statusMessage: "网关地址已配置，但凭据未匹配本地密钥；未验证客户端运行状态" },
+        claude: { ...claudeConfigured, managedByUs: false, activeProfileId: null, unsavedGatewayKey: true, currentKeyMasked: "sk-••••••••9f3e", adoptable: true, configurationStatus: "unknown" as const, statusMessage: "网关地址已配置，但凭据未匹配本地密钥；未验证客户端运行状态" },
       };
 
     case "broken":
@@ -424,7 +454,7 @@ function mockHealthRaw(s: Scenario, req: HealthRequest): HealthIssue[] {
 /** AI 诊断假数据：等 1.2 秒再返回。「启动后遇到问题？」选「连不上 / 请求超时」可以预览 AI 调用失败 */
 export async function mockDiagnose(s: Scenario, req: DiagnoseRequest): Promise<Diagnosis> {
   await new Promise(r => setTimeout(r, 1200));
-  if (req.note.includes("超时")) throw new Error("zAI 暂时看不了，稍后重试");
+  if (req.note.includes("超时")) throw new Error("AI 暂时看不了，稍后重试");
   if (s === "conflict" && req.tool === "claude" && !repaired.has("claude")) return {
     cause: "配置里同时有 API Key 和 Auth Token，模型别名也没写齐",
     steps: ["保留一种密钥并补全模型别名", "重新打开 Claude Code"],

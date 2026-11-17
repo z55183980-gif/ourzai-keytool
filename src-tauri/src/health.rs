@@ -94,7 +94,7 @@ pub enum Connection {
     Ok(Vec<String>),
 }
 
-fn host(url: &str) -> Option<String> {
+pub(crate) fn host(url: &str) -> Option<String> {
     let rest = url
         .trim()
         .strip_prefix("https://")

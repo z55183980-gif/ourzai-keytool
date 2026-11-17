@@ -39,6 +39,10 @@ pub struct CodexEnv {
     pub active_profile_id: Option<String>,
     /// 配置指向本网关、带着一把 Key，但这把 Key 没保存在本工具：可以一键收进密钥列表
     pub unsaved_gateway_key: bool,
+    /// 配置里当前生效的密钥（掩码）。不论是 zAI 还是第三方，读得到才有值
+    pub current_key_masked: Option<String>,
+    /// 当前生效的地址和密钥都读得到、且没保存在本工具：可以加入密钥列表
+    pub adoptable: bool,
     pub configuration_status: ConfigurationStatus,
     pub status_message: String,
 }
@@ -55,6 +59,10 @@ pub struct ClaudeEnv {
     pub active_profile_id: Option<String>,
     /// 同 CodexEnv::unsaved_gateway_key
     pub unsaved_gateway_key: bool,
+    /// 同 CodexEnv::current_key_masked
+    pub current_key_masked: Option<String>,
+    /// 同 CodexEnv::adoptable
+    pub adoptable: bool,
     pub configuration_status: ConfigurationStatus,
     pub status_message: String,
 }
@@ -107,6 +115,8 @@ fn codex_not_read() -> Result<CodexEnv> {
         managed_by_us: false,
         active_profile_id: None,
         unsaved_gateway_key: false,
+        current_key_masked: None,
+        adoptable: false,
         configuration_status: ConfigurationStatus::Unknown,
         status_message: NOT_READ.into(),
     })
@@ -122,6 +132,8 @@ fn claude_not_read() -> Result<ClaudeEnv> {
         managed_by_us: false,
         active_profile_id: None,
         unsaved_gateway_key: false,
+        current_key_masked: None,
+        adoptable: false,
         configuration_status: ConfigurationStatus::Unknown,
         status_message: NOT_READ.into(),
     })
@@ -160,7 +172,7 @@ fn scan_codex(provider_id: &str, expected_url: &[String], gateway: &str, preferr
         provider_id,
         expected_url,
     );
-    if has_environment_override(&[
+    let overridden = has_environment_override(&[
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "CODEX_API_KEY",
@@ -169,14 +181,18 @@ fn scan_codex(provider_id: &str, expected_url: &[String], gateway: &str, preferr
         "CODEX_ID_TOKEN_FILE",
         "OPENAI_IDENTITY_TOKEN_FILE",
         "OPENAI_IDENTITY_TOKEN",
-    ]) {
+    ]);
+    if overridden {
         assessment = Assessment::unknown(
             "检测到当前进程的认证或服务地址环境变量；无法仅根据配置文件确认使用哪把密钥",
         );
     }
+    // 环境变量会盖过配置文件：那时读出来的未必是真正生效的，不提供加入
+    let live = if overridden { None } else { live_codex(cfg_text.as_deref(), auth_text.as_deref()) };
     let active_profile_id = crate::state::match_profile_for(assessment.key.as_deref(), current_base_url.as_deref(), true, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
     let unsaved_gateway_key = assessment.key.as_deref().is_some_and(|k| !k.trim().is_empty()) && !managed_by_us;
+    let (current_key_masked, adoptable) = live_summary(live.as_ref(), managed_by_us);
     assessment.finish(managed_by_us);
     let auth_state = if cfg_text
         .as_deref()
@@ -205,6 +221,8 @@ fn scan_codex(provider_id: &str, expected_url: &[String], gateway: &str, preferr
         managed_by_us,
         active_profile_id,
         unsaved_gateway_key,
+        current_key_masked,
+        adoptable,
         configuration_status: assessment.status,
         status_message: assessment.message,
     })
@@ -226,14 +244,16 @@ fn scan_claude(anthropic_base_url: &[String], gateway: &str, preferred: Option<&
     };
 
     let mut assessment = assess_claude(text.as_deref(), anthropic_base_url);
-    if has_environment_override(&[
+    let overridden = has_environment_override(&[
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY",
         "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_FOUNDRY",
-    ]) {
+    ]);
+    let live = if overridden { None } else { live_claude(text.as_deref()) };
+    if overridden {
         assessment = Assessment::unknown(
             "检测到当前进程的 Claude 认证或服务地址环境变量；无法仅根据配置文件确认使用哪把密钥",
         );
@@ -241,6 +261,7 @@ fn scan_claude(anthropic_base_url: &[String], gateway: &str, preferred: Option<&
     let active_profile_id = crate::state::match_profile_for(assessment.key.as_deref(), current_base_url.as_deref(), false, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
     let unsaved_gateway_key = assessment.key.as_deref().is_some_and(|k| !k.trim().is_empty()) && !managed_by_us;
+    let (current_key_masked, adoptable) = live_summary(live.as_ref(), managed_by_us);
     assessment.finish(managed_by_us);
 
     Ok(ClaudeEnv {
@@ -252,6 +273,8 @@ fn scan_claude(anthropic_base_url: &[String], gateway: &str, preferred: Option<&
         managed_by_us,
         active_profile_id,
         unsaved_gateway_key,
+        current_key_masked,
+        adoptable,
         configuration_status: assessment.status,
         status_message: assessment.message,
     })
@@ -299,6 +322,7 @@ fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&st
         .as_deref()
         .is_some_and(|k| !k.trim().is_empty() && !claude_desktop::is_sealed(k))
         && !managed_by_us;
+    let (current_key_masked, adoptable) = live_summary(text.as_deref().and_then(live_claude_desktop).as_ref(), managed_by_us);
     if !managed_by_us && assessment.key.as_deref().is_some_and(claude_desktop::is_sealed) {
         assessment.message =
             "网关地址已配置，密钥已被 Claude 桌面版加密保存，无法确认是哪一把；启动时会重新写入所选密钥".into();
@@ -313,6 +337,8 @@ fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&st
         managed_by_us,
         active_profile_id,
         unsaved_gateway_key,
+        current_key_masked,
+        adoptable,
         configuration_status: assessment.status,
         status_message: assessment.message,
     })
@@ -540,6 +566,106 @@ fn assess_claude(text: Option<&str>, expected: &[String]) -> Assessment {
     Assessment::candidate(claude_config::current_auth_token(text))
 }
 
+/// 配置文件里当前生效的服务地址、密钥和模型，不论是 zAI 网关还是第三方服务。
+/// 只在地址和静态密钥都能从配置文件里直接读到时才有值（系统密钥库、环境变量、云服务等读不到的返回 None）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveCredential {
+    pub base_url: String,
+    pub key: String,
+    pub model: String,
+}
+
+fn non_empty(s: Option<&str>) -> Option<String> {
+    s.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// 掩码与「能否加入」：已经对上本工具里某把密钥的，不再提供加入
+fn live_summary(live: Option<&LiveCredential>, managed_by_us: bool) -> (Option<String>, bool) {
+    match live {
+        Some(c) => (Some(crate::state::mask(&c.key)), !managed_by_us),
+        None => (None, false),
+    }
+}
+
+/// Codex：config.toml 选中的服务提供方 + 它的密钥（provider 段里的 bearer token，或 auth.json 的 API Key）
+pub fn live_codex(config: Option<&str>, auth: Option<&str>) -> Option<LiveCredential> {
+    let text = config?;
+    let doc = codex_config::parse(text).ok()?;
+    if doc.get("profile").is_some() {
+        return None;
+    }
+    if doc
+        .get("cli_auth_credentials_store")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s != "file")
+    {
+        return None;
+    }
+    let auth_key = || {
+        if codex_auth::inspect(auth) != AuthState::ApiKeyOnly {
+            return None;
+        }
+        non_empty(codex_auth::current_api_key(auth).as_deref())
+    };
+    let provider = doc.get("model_provider").and_then(|v| v.as_str()).unwrap_or("openai");
+    let (base_url, key) = if provider == "openai" {
+        let base = non_empty(doc.get("openai_base_url").and_then(|v| v.as_str()))?;
+        if same_url(&base, "https://api.openai.com/v1") {
+            return None;
+        }
+        (base, auth_key()?)
+    } else {
+        let table = doc.get("model_providers").and_then(|v| v.get(provider))?;
+        if table.get("env_key").is_some() || table.get("auth").is_some() || table.get("gateway_oauth").is_some() {
+            return None;
+        }
+        let base = non_empty(table.get("base_url").and_then(|v| v.as_str()))?;
+        let key = match non_empty(table.get("experimental_bearer_token").and_then(|v| v.as_str())) {
+            Some(k) => k,
+            None if table.get("requires_openai_auth").and_then(|v| v.as_bool()) == Some(true) => auth_key()?,
+            None => return None,
+        };
+        (base, key)
+    };
+    Some(LiveCredential { base_url, key, model: codex_config::current_model(text).unwrap_or_default() })
+}
+
+/// Claude Code：settings.json 的 env 里写了服务地址和 ANTHROPIC_AUTH_TOKEN
+pub fn live_claude(text: Option<&str>) -> Option<LiveCredential> {
+    let text = text?;
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let env = value.get("env");
+    if value.get("apiKeyHelper").is_some()
+        || ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]
+            .iter()
+            .any(|k| env.and_then(|v| v.get(k)).is_some_and(|v| v.as_str().is_none_or(|s| !s.is_empty())))
+    {
+        return None;
+    }
+    Some(LiveCredential {
+        base_url: non_empty(claude_config::current_base_url(text).as_deref())?,
+        key: non_empty(claude_config::current_auth_token(text).as_deref())?,
+        model: claude_config::current_model(text).unwrap_or_default(),
+    })
+}
+
+/// Claude 桌面版：第三方推理（gateway）+ 明文静态密钥。被桌面版加密保存的读不出原文，返回 None
+pub fn live_claude_desktop(text: &str) -> Option<LiveCredential> {
+    let c = claude_desktop::current(text)?;
+    if c.provider.as_deref() != Some("gateway")
+        || c.other_credentials
+        || c.credential_kind.as_deref().is_some_and(|k| k != "static")
+    {
+        return None;
+    }
+    let key = non_empty(c.api_key.as_deref()).filter(|k| !claude_desktop::is_sealed(k))?;
+    Some(LiveCredential {
+        base_url: non_empty(c.base_url.as_deref())?,
+        key,
+        model: c.models.into_iter().next().unwrap_or_default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,5 +758,59 @@ experimental_bearer_token = "unused-key"
             assess_claude(None, &[URL.to_string()]).status,
             ConfigurationStatus::Unconfigured
         );
+    }
+    #[test]
+    fn live_codex_reads_third_party_provider_and_api_key_modes() {
+        let cfg = r#"model = "relay-model"
+model_provider = "relay"
+[model_providers.relay]
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "relay-key"
+"#;
+        assert_eq!(
+            live_codex(Some(cfg), None),
+            Some(LiveCredential { base_url: "https://relay.example/v1".into(), key: "relay-key".into(), model: "relay-model".into() })
+        );
+        let cfg = "openai_base_url = \"https://relay.example/v1\"\n";
+        assert_eq!(live_codex(Some(cfg), Some(AUTH)).map(|c| c.key), Some("saved-file-key".into()));
+    }
+    #[test]
+    fn live_codex_skips_official_and_unreadable_credentials() {
+        assert!(live_codex(Some("model = \"gpt\"\n"), Some(AUTH)).is_none());
+        assert!(live_codex(None, Some(AUTH)).is_none());
+        let env_key = r#"model_provider = "relay"
+[model_providers.relay]
+base_url = "https://relay.example/v1"
+env_key = "RELAY_KEY"
+"#;
+        assert!(live_codex(Some(env_key), None).is_none());
+        let keyring = "cli_auth_credentials_store = \"keyring\"\nopenai_base_url = \"https://relay.example/v1\"\n";
+        assert!(live_codex(Some(keyring), Some(AUTH)).is_none());
+    }
+    #[test]
+    fn live_claude_reads_third_party_token_but_not_cloud_providers() {
+        let cfg = r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"relay-key","ANTHROPIC_MODEL":"m"}}"#;
+        assert_eq!(
+            live_claude(Some(cfg)),
+            Some(LiveCredential { base_url: "https://relay.example".into(), key: "relay-key".into(), model: "m".into() })
+        );
+        assert!(live_claude(Some(r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example"}}"#)).is_none());
+        assert!(live_claude(Some(r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example","ANTHROPIC_AUTH_TOKEN":"k","CLAUDE_CODE_USE_BEDROCK":"1"}}"#)).is_none());
+        assert!(live_claude(Some("{}")).is_none());
+    }
+    #[test]
+    fn live_claude_desktop_needs_plain_static_gateway_key() {
+        let plain = r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://relay.example","inferenceGatewayApiKey":"relay-key","inferenceModels":["m"]}"#;
+        assert_eq!(live_claude_desktop(plain).map(|c| (c.key, c.model)), Some(("relay-key".into(), "m".into())));
+        let sealed = plain.replace("relay-key", "__sealed__:v1:abc");
+        assert!(live_claude_desktop(&sealed).is_none());
+        assert!(live_claude_desktop("{}").is_none());
+    }
+    #[test]
+    fn saved_keys_are_not_offered_for_adoption() {
+        let live = LiveCredential { base_url: "https://relay.example".into(), key: "relay-key-123456".into(), model: String::new() };
+        assert_eq!(live_summary(Some(&live), false), (Some(crate::state::mask("relay-key-123456")), true));
+        assert_eq!(live_summary(Some(&live), true).1, false);
+        assert_eq!(live_summary(None, false), (None, false));
     }
 }

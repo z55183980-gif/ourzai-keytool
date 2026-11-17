@@ -179,9 +179,10 @@ export const healthCheck = (req: HealthRequest): Promise<HealthIssue[]> =>
 export const envOverrides = (): Promise<string[]> =>
   DEV && S ? Promise.resolve(mock.mockEnvOverrides(S)) : invoke<string[]>("env_overrides");
 
-/** 把配置文件里正在用、没保存在本工具的 zAI 密钥收进列表（后端读取并测试，密钥不经过前端） */
-export const adoptCurrentKey = (tool: ToolId, baseUrl: string, ignoreProxy: boolean): Promise<AdoptResult> =>
-  DEV && S ? mock.mockAdopt(S, tool) : invoke<AdoptResult>("adopt_current_key", { req: { tool, baseUrl, ignoreProxy } });
+/** 把配置文件里正在用、没保存在本工具的密钥（zAI 或第三方）加入列表（后端读取并测试，密钥不经过前端）。
+ *  desktop：Claude 桌面版读它自己的第三方推理配置 */
+export const adoptCurrentKey = (tool: ToolId, baseUrl: string, ignoreProxy: boolean, desktop = false): Promise<AdoptResult> =>
+  DEV && S ? mock.mockAdopt(S, tool) : invoke<AdoptResult>("adopt_current_key", { req: { tool, baseUrl, ignoreProxy, desktop } });
 
 export const aiDiagnose = (req: DiagnoseRequest): Promise<Diagnosis> =>
   DEV && S ? mock.mockDiagnose(S, req) : invoke<Diagnosis>("ai_diagnose", { req });

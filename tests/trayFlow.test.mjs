@@ -15,10 +15,10 @@ function fixture(overrides = {}) {
   };
   return { calls, run: action => runTrayAction(action, preferences, deps) };
 }
-test('tray launch uses saved tool mode, key and directory through existing checked launch callback', async () => {
+test('tray launch uses saved tool mode, the live configuration and directory through existing checked launch callback', async () => {
   const f = fixture();
   await f.run({ kind: 'launch', tool: 'claude' });
-  assert.deepEqual(f.calls, [['show', 'claude', false], ['launch', 'claude', 'desktop', 'key-a', 'C:\\项目']]);
+  assert.deepEqual(f.calls, [['show', 'claude', false], ['launch', 'claude', 'desktop', 'current', 'C:\\项目']]);
 });
 test('CLI tray launch adds history only after successful launch', async () => {
   const f = fixture(); await f.run({ kind: 'launch', tool: 'codex' });
