@@ -492,3 +492,7 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 .service-list.inline .service-meta span { font-size: 12px; }
 .launcher-pages .service-edit { flex-shrink: 0; height: auto; min-height: 0; padding: 4px 11px; font-size: 12px; }
 .launch-configuration > .service-list.inline + button { border-top: 1px solid rgba(40,57,90,.07); }
+
+/* 启动按钮在卡片顶部（紧跟启动方式），下面的提示居中跟在说明后面 */
+.tool-hero .desktop-hint, .tool-hero .launch-warning { margin-top: -8px; text-align: center; }
+.tool-hero .client-help-link { margin: -4px 0 0; }

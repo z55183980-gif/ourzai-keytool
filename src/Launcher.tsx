@@ -577,6 +577,15 @@ export function Launcher(props: {
           </button>
           <button className="site" onClick={() => setSetupTarget(target)}>{t("安装 / 更新指引")}</button>
         </div> : <>
+        {/* 启动按钮放在顶部：底部是导航栏，按钮放下面容易被挤到折叠区外 */}
+        <button className="primary launch-button" disabled={disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough} onClick={async () => {
+          if (!prefs || savingRef.current) return;
+          const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
+          if (ok && mode === "cli") await save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0,8) });
+        }}><UiIcon name={mode === "cli" ? "terminal" : "desktop"}/>{props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) })}</button>
+        {(broken || note) && <span className={`launch-note ${broken || invalidService ? "warn-text" : ""}`}>{broken ? t("配置文件需要修复，见下方输出") : note}</span>}
+        {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
+        {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
         {!!issues?.length && !checking && <div className="health-cards">
           {issues.map(issue => {
             const action = issue.id === "K1" ? { label: t("去控制台 ↗"), run: props.onConsole } : fixAction(tool, issue.fix);
@@ -614,16 +623,7 @@ export function Launcher(props: {
         </button>}
         </div>
 
-        {/* 提示放在按钮上方：卡片固定高度，按钮贴底 */}
-        {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
-        {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
         <button className="site client-help-link" disabled={disabled} onClick={() => setSetupTarget(target)}>{t(installed?.installed ? "安装 / 更新指引" : "安装客户端…")}</button>
-        <button className="primary launch-button" disabled={disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough} onClick={async () => {
-          if (!prefs || savingRef.current) return;
-          const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
-          if (ok && mode === "cli") await save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0,8) });
-        }}><UiIcon name={mode === "cli" ? "terminal" : "desktop"}/>{props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) })}</button>
-        {(broken || note) && <span className={`launch-note ${broken || invalidService ? "warn-text" : ""}`}>{broken ? t("配置文件需要修复，见下方输出") : note}</span>}
         </>}
       </section>
 
