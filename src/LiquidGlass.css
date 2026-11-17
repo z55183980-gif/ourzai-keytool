@@ -235,7 +235,7 @@ button.primary:disabled, .launcher-pages button.primary:disabled, .key-actions >
     filter: none;
   }
   /* Text links and list rows brighten without gaining a raised button container. */
-  :is(.launcher-app, .account-dialog) button:is(.site, .cauth-link, .console-clear, .console-action, .console-toggle, .setting-link, .service-option, .workdir-row, .model-option):hover:not(:disabled) {
+  :is(.launcher-app, .account-dialog) button:is(.site, .cauth-link, .console-clear, .console-action, .console-toggle, .setting-link, .service-option, .service-pick, .workdir-row, .model-option):hover:not(:disabled) {
     translate: none;
     box-shadow: none !important;
   }
