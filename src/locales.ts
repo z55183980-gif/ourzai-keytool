@@ -166,7 +166,6 @@ export const DICT: Record<string, [string, string]> = {
   "写入「{name}」的配置后，{where}": ["寫入「{name}」的設定後，{where}", "Will write the “{name}” config, then {where}"],
   "请先选择可用的服务": ["請先選擇可用的服務", "Choose an available service first"],
   "配置文件需要修复，见下方输出": ["設定檔需要修復，見下方輸出", "The config file needs repair; see the output below"],
-  "桌面应用内已有的登录可能优先生效，启动后请在应用内确认。": ["桌面應用程式內已有的登入可能優先生效，啟動後請在應用程式內確認。", "An existing sign-in inside the desktop app may take precedence; check in the app after launch."],
   "设置程序路径": ["設定程式路徑", "Set app path"],
   "配置状态读取中": ["設定狀態讀取中", "Reading config status"],
   "zAI 密钥": ["zAI 密鑰", "zAI key"],

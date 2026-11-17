@@ -576,7 +576,6 @@ export function Launcher(props: {
         }}><UiIcon name={mode === "cli" ? "terminal" : "desktop"}/>{props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) })}</button>
         {/* 按钮下不再放说明文案；只在配置文件损坏、无法启动时提示原因 */}
         {broken && <span className="launch-note warn-text">{t("配置文件需要修复，见下方输出")}</span>}
-        {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
         {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
         {!!issues?.length && !checking && <div className="health-cards">
           {issues.map(issue => {

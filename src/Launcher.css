@@ -173,7 +173,6 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 .service-meta { display: flex !important; flex-wrap: wrap; column-gap: 10px; }
 .service-meta span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; font-size: 11px; }
 .service-current { font-size: 11px; color: #1d7f58; background: rgba(35, 163, 111, .13); padding: 2px 8px; border-radius: 999px; white-space: nowrap; flex-shrink: 0; }
-.desktop-hint { margin: 0; font-size: 12px; color: var(--dim); }
 .launch-warning { margin: 0; color: var(--warn-fg); font-size: 12px; overflow-wrap: anywhere; }
 .launch-warning .site { padding: 0; font-size: 12px; }
 .launcher-pages .launch-button { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 52px; padding: 14px 8px; font-size: 16px; font-weight: 600; }
@@ -494,5 +493,5 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 .launch-configuration > .service-list.inline + button { border-top: 1px solid rgba(40,57,90,.07); }
 
 /* 启动按钮在卡片顶部（紧跟启动方式），下面的提示居中跟在说明后面 */
-.tool-hero .desktop-hint, .tool-hero .launch-warning { margin-top: -6px; text-align: center; }
+.tool-hero .launch-warning { margin-top: -6px; text-align: center; }
 .tool-hero .client-help-link { margin: -4px 0 0; }
