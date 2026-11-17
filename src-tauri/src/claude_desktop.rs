@@ -14,7 +14,7 @@ use crate::error::{AppError, Result};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
-pub const SEALED_PREFIX: &str = "__sealed__:v1:";
+pub const SEALED_PREFIX: &str = "__sealed__:";
 pub const KEY_PROVIDER: &str = "inferenceProvider";
 pub const KEY_BASE_URL: &str = "inferenceGatewayBaseUrl";
 pub const KEY_API_KEY: &str = "inferenceGatewayApiKey";
@@ -123,8 +123,8 @@ fn new_id() -> Result<String> {
 }
 
 /// 写入目标：已有选中的配置就写它；配置库还没建就新建一份 Default 并选中（和桌面版自己建的一样）
-pub fn target_for_write() -> Result<(PathBuf, Option<String>)> {
-    match applied()? {
+pub fn target_for_write(meta: Option<&str>) -> Result<(PathBuf, Option<String>)> {
+    match parse_meta(meta) {
         Applied::Config(path) => Ok((path, None)),
         Applied::Unusable(reason) => Err(AppError::Other(reason)),
         Applied::None => {

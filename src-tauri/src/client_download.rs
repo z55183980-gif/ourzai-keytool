@@ -811,12 +811,12 @@ fn install(target: Target, asset: &Asset, path: &Path, dir: &Path) -> Result<Out
             Duration::from_secs(15),
         )?;
         if !result.status.success()
-            || crate::client_setup::parse_version_output(&String::from_utf8_lossy(&result.stdout))
+            || crate::client_setup::target_version(target, &String::from_utf8_lossy(&result.stdout))
                 .is_none()
         {
             return Err(err("客户端版本验证失败，未替换当前程序。"));
         }
-        if crate::client_setup::parse_version_output(&String::from_utf8_lossy(&result.stdout))
+        if crate::client_setup::target_version(target, &String::from_utf8_lossy(&result.stdout))
             .as_deref()
             != Some(asset.version.as_str())
         {

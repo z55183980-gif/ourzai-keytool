@@ -116,9 +116,13 @@ def main():
             root = Path(temporary)
             work = root / "中文 space's & literal"
             work.mkdir()
-            subprocess.run(["cargo", "run", "--locked", "--example", "client_fixture", "--", str(root), base],
+            code, output, _ = run_client(args.codex, ["--version"], os.environ.copy(), work)
+            if code or not output.strip().startswith("codex-cli "):
+                raise RuntimeError("Unrecognized Codex executable")
+            version = output.strip().split()[-1]
+            subprocess.run(["cargo", "run", "--locked", "--example", "client_fixture", "--", str(root), base, version],
                            cwd=REPO / "src-tauri", check=True, timeout=180)
-            for name in ["codex-builtin", "codex-bearer", "claude"]:
+            for name in ["codex-selected", "codex-bearer", "claude"]:
                 env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("ANTHROPIC_", "OPENAI_", "CODEX_", "CLAUDE_"))}
                 user = root / (name + "-user")
                 user.mkdir()
@@ -141,6 +145,7 @@ def main():
                     code, out, err = run_client(executable, options, env, work)
                     seen = REQUESTS[before:]
                     ok = code == 0 and "E2E_OK" in out and any(r.get("path", "").startswith(expected) and r.get("authOk") and r.get("model") == model for r in seen)
+                    ok = ok and not any(r.get("blockedExternal", "").split(":")[0] == "api.openai.com" for r in seen)
                     print(json.dumps({"case": name, "passed": ok, "exitCode": code, "requests": seen}, ensure_ascii=False), flush=True)
                     if not ok:
                         print((err + "\n" + out)[-4000:], flush=True)

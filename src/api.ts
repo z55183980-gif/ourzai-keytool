@@ -35,7 +35,7 @@ export const takeTrayAction = (): Promise<TrayAction | null> => DEV && S ? Promi
 export const validateProjectDirectory = (path: string): Promise<void> => DEV && S ? Promise.resolve() : invoke("validate_project_directory", { path });
 
 export interface ClientGuide { platform: string; url: string; command: string | null; shell: string; note: string; variants: { shell: string; command: string }[]; canRun: boolean }
-export interface ClientVersion { current: string; latest: string | null; updateAvailable: boolean | null; path: string; warning: string | null }
+export interface ClientVersion { current: string; verifiedBuiltin?: boolean; latest: string | null; updateAvailable: boolean | null; path: string; warning: string | null }
 export const isSetupPreview = !!(DEV && S);
 export const openSetupTerminal = (): Promise<void> => DEV && S ? Promise.resolve() : invoke("open_setup_terminal");
 export interface InstallProgress { phase: "resolve" | "download" | "relay" | "verify" | "install" | "complete" | "installer"; downloaded: number; total: number | null }
@@ -80,9 +80,9 @@ export const launchClient = (req: LaunchRequest): Promise<{ message: string }> =
   ? Promise.resolve({ message: "预览模式：未启动真实程序" }) : invoke("launch_client", { req });
 
 /** 读取本机配置。tools：用户同意读取的工具，另一个返回「未读取」占位 */
-export const scanEnvironment = (baseUrl?: string, tools?: ToolId[], preferredProfileId?: string): Promise<Environment> =>
+export const scanEnvironment = (baseUrl?: string, tools?: (ToolId | "claude-cli" | "claude-desktop")[], preferredProfileId?: string): Promise<Environment> =>
   DEV && S
-    ? Promise.resolve(mock.mockEnvFor(S, tools))
+    ? Promise.resolve(mock.mockEnvFor(S, tools?.map(tool => tool === "codex" ? "codex" : "claude")))
     : invoke<Environment>("scan_environment", { baseUrl: baseUrl ?? null, tools: tools ?? null, preferredProfileId: preferredProfileId ?? null });
 
 export const loadAppState = (): Promise<AppState> =>

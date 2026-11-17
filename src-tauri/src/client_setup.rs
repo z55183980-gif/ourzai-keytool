@@ -126,6 +126,14 @@ pub(crate) fn parse_version_output(text: &str) -> Option<String> {
         .map(|v| v.to_string())
 }
 
+pub(crate) fn target_version(target: Target, text: &str) -> Option<String> {
+    text.lines().take(8).filter(|line| match target {
+        Target::CodexCli => line.trim().starts_with("codex-cli "),
+        Target::ClaudeCli => line.trim().ends_with("(Claude Code)"),
+        _ => false,
+    }).find_map(parse_version_output)
+}
+
 pub(crate) fn release_version(document: &[u8]) -> Result<String> {
     let data: serde_json::Value = serde_json::from_slice(document)?;
     if data["draft"].as_bool() != Some(false) || data["prerelease"].as_bool() != Some(false) {
@@ -149,6 +157,7 @@ pub(crate) fn release_version(document: &[u8]) -> Result<String> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientVersion {
+    pub verified_builtin: bool,
     pub current: String,
     pub latest: Option<String>,
     pub update_available: Option<bool>,
@@ -160,6 +169,7 @@ fn version_status(current: String, path: String, latest: Result<String>) -> Clie
     let latest = latest.ok();
     let update_available = latest.as_ref().and_then(|v| newer_version(v, &current).ok());
     ClientVersion {
+        verified_builtin: crate::codex_config::verified_builtin(Some(&current)),
         current,
         path,
         update_available,
@@ -199,7 +209,7 @@ pub async fn check_client_version(target: Target, ignore_proxy: bool, check_late
     let (current, path) = crate::commands::blocking(move || launcher::installed_version(target)).await?
         .ok_or_else(|| AppError::Other("未找到客户端，请先安装或设置程序路径".into()))?;
     if !check_latest.unwrap_or(true) {
-        return Ok(ClientVersion { current, path, latest: None, update_available: None, warning: None });
+        return Ok(ClientVersion { verified_builtin: target == Target::CodexCli && crate::codex_config::verified_builtin(Some(&current)), current, path, latest: None, update_available: None, warning: None });
     }
     Ok(version_status(
         current,
@@ -254,6 +264,9 @@ mod tests {
             Some("2.1.89".into())
         );
         assert_eq!(parse_version_output("command not found"), None);
+        assert!(target_version(Target::CodexCli, "2.1.20 (Claude Code)").is_none());
+        assert!(target_version(Target::ClaudeCli, "codex-cli 0.100.0").is_none());
+        assert!(target_version(Target::CodexCli, "0.100.0").is_none());
         assert_eq!(parse_version_output("Warning: requires Node 22.0.0\ncodex-cli 0.99.0"), Some("0.99.0".into()));
         assert_eq!(parse_version_output("Warning: requires Node 22.0.0"), None);
         assert_eq!(

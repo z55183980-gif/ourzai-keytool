@@ -28,7 +28,7 @@ pub fn scan_environment_blocking(base_url: Option<String>, tools: Option<Vec<Str
     let openai_base = base_url.unwrap_or_else(|| api::builtin_defaults().base_url);
     // tools：用户同意读取的工具；不传就两个都读（老版本前端、内部调用）
     let wants = |t: &str| tools.as_ref().is_none_or(|list| list.iter().any(|x| x == t));
-    detect::scan_selected_for(PROVIDER_ID, &openai_base, wants("claude"), wants("codex"), preferred_profile_id.as_deref())
+    detect::scan_targets(PROVIDER_ID, &openai_base, wants("claude") || wants("claude-cli"), wants("claude") || wants("claude-desktop"), wants("codex"), preferred_profile_id.as_deref())
 }
 
 #[tauri::command]
@@ -623,12 +623,13 @@ pub struct ApplyRequest {
 
     // —— Codex ——
     pub configure_codex: bool,
+    #[serde(default)]
+    pub codex_desktop: bool,
     pub model: String,
     pub reasoning_effort: String,
     pub cleanup_residue: bool,
     /// 用户明确勾选了「同时写入 auth.json（会覆盖官方登录）」
     pub overwrite_official_auth: bool,
-    /// 保守模式：不写 experimental_bearer_token，退回老版本能认的写法
     pub conservative: bool,
 
     // —— Claude Code ——
@@ -666,6 +667,8 @@ pub async fn apply_config(req: ApplyRequest) -> Result<ApplyResult> {
 
 pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     crate::updates::ensure_supported()?;
+    let cli_version = (req.configure_codex && !req.conservative && !req.codex_desktop)
+        .then(|| crate::launcher::cli_version(crate::launcher::Target::CodexCli).ok().map(|(version, _)| version)).flatten();
     let _guard = backup::lock()?;
     crate::updates::ensure_supported()?;
     let mut out = ApplyResult::default();
@@ -701,17 +704,18 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     let claude_path = paths::claude_settings_path()?;
 
     let existing_codex = if req.configure_codex {
-        let t = read_text_optional(&codex_cfg_path)?.unwrap_or_default();
+        let snapshot = read_text_optional(&codex_cfg_path)?;
+        let t = snapshot.as_deref().unwrap_or_default();
         // 硬规则：解析不了就绝不写入。宁可让用户手动修，也不能覆盖他的东西。
         if !t.trim().is_empty() {
-            if let Err(e) = codex_config::parse(&t) {
+            if let Err(e) = codex_config::parse(t) {
                 return Err(AppError::TomlParse(format!(
                     "{}。你的原文件没有被改动，可以自己修好它，或者用「备份原文件，重新生成」",
                     e
                 )));
             }
         }
-        Some(t)
+        Some(snapshot)
     } else {
         None
     };
@@ -730,7 +734,8 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     };
 
     let existing_desktop = if req.configure_claude_desktop {
-        let (path, new_meta) = claude_desktop::target_for_write()?;
+        let meta = read_text_optional(&claude_desktop::meta_path()?)?;
+        let (path, new_meta) = claude_desktop::target_for_write(meta.as_deref())?;
         let t = read_text_optional(&path)?;
         if let SettingsState::Broken(e) = claude_desktop::inspect(t.as_deref()) {
             return Err(AppError::JsonParse(format!(
@@ -738,7 +743,7 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
                 e
             )));
         }
-        Some((path, new_meta, t))
+        Some((path, meta, new_meta, t))
     } else {
         None
     };
@@ -772,21 +777,26 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     let mut txn = TwoFileTxn::new();
 
     // ——— Codex ———
-    if let Some(existing) = existing_codex {
+    if let Some(snapshot) = existing_codex {
+        let existing = snapshot.as_deref().unwrap_or_default();
         let auth_text = read_text_optional(&codex_auth_path)?;
         let auth_state = codex_auth::inspect(auth_text.as_deref());
+        let journal = paths::ownership_path()?;
+        let previous = crate::atomic::read_optional(&journal)?;
+        let (mut ownership, journal_corrupt) = crate::codex_ownership::Ownership::from_bytes(previous.as_deref());
+        if journal_corrupt {
+            out.warnings.push(JOURNAL_CORRUPT.into());
+        }
+        ownership.observe_route(existing, auth_text.as_deref());
 
-        // 默认用手动配置多年通行的写法（内置 openai + auth.json），实测可用。
-        // 只有在必须保住官方 ChatGPT 登录、或 auth.json 坏了动不得时，
-        // 才改走自定义 provider 段把密钥放配置里。
-        let external_store = codex_uses_external_auth_store(&existing);
+        let external_store = codex_uses_external_auth_store(existing);
         let keep_official = external_store
             || (auth_state == AuthState::OfficialLogin && !req.overwrite_official_auth);
-        let auth_mode = if keep_official || auth_state == AuthState::Unparsable {
-            AuthMode::BearerToken
-        } else {
-            AuthMode::OpenAiBuiltin
-        };
+        let foreign_key = auth_state == AuthState::ApiKeyOnly && !ownership.owns_auth(auth_text.as_deref())
+            && !(codex_config::has_builtin_relay(existing) && codex_config::current_pointing(existing).as_deref() == Some(openai_base.as_str())
+                && codex_auth::current_api_key(auth_text.as_deref()).as_deref() == Some(api_key.as_str()));
+        let auth_mode = codex_config::select_auth_mode(cli_version.as_deref(), req.conservative || req.codex_desktop,
+            foreign_key || keep_official || auth_state == AuthState::Unparsable);
 
         let provider = ProviderConfig {
             provider_id: PROVIDER_ID.into(),
@@ -803,13 +813,13 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
             out.warnings
                 .push("认证由系统密钥库或其他存储管理；已保留原认证，仅配置独立的网关凭据".into());
         }
-        let new_cfg = codex_config::apply(&existing, &provider, req.cleanup_residue)?;
-        txn.write(&codex_cfg_path, &new_cfg)?;
+        let new_cfg = codex_config::apply(existing, &provider, req.cleanup_residue)?;
+        txn.stage_text(&codex_cfg_path, snapshot.as_deref(), Some(&new_cfg));
         out.wrote_codex_config = true;
         out.paths.push(codex_cfg_path.to_string_lossy().to_string());
 
         match auth_state {
-            AuthState::OfficialLogin if keep_official => {
+            AuthState::OfficialLogin if auth_mode == AuthMode::BearerToken => {
                 out.warnings
                     .push("已经帮你保住了 ChatGPT 官方登录，以后随时能切回去".into());
             }
@@ -825,16 +835,19 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
         }
 
         if auth_mode == AuthMode::OpenAiBuiltin {
+            ownership.record_auth(&api_key);
             let merged = if req.overwrite_official_auth {
                 codex_auth::replace_with_api_key(auth_text.as_deref(), &api_key)?
             } else {
                 codex_auth::merge_api_key(auth_text.as_deref(), &api_key)?
             };
-            txn.write(&codex_auth_path, &merged)?;
+            txn.stage_text(&codex_auth_path, auth_text.as_deref(), Some(&merged));
             out.wrote_codex_auth = true;
             out.paths
                 .push(codex_auth_path.to_string_lossy().to_string());
         }
+        ownership.record(previous.is_none() || journal_corrupt, existing, &new_cfg);
+        txn.stage(&journal, previous, Some(serde_json::to_vec(&ownership)?));
     }
 
     // ——— Claude Code ———
@@ -848,13 +861,15 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
             haiku_model: req.claude_haiku_model.clone(),
         };
         let merged = claude_config::merge(existing.as_deref(), &settings)?;
-        txn.write(&claude_path, &merged)?;
+        txn.stage_text(&claude_path, existing.as_deref(), Some(&merged));
         out.wrote_claude_settings = true;
         out.paths.push(claude_path.to_string_lossy().to_string());
     }
 
     // ——— Claude 桌面版 ———
-    if let Some((path, new_meta, existing)) = existing_desktop {
+    // 写入后桌面版会把明文密钥加密；记下这次写入的条目，之后才能认出那段密文
+    let mut desktop_written: Option<(String, claude_desktop::Current)> = None;
+    if let Some((path, meta_before, new_meta, existing)) = existing_desktop {
         let models = claude_desktop::model_list(&[
             &req.claude_model,
             &req.claude_opus_model,
@@ -862,10 +877,13 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
             &req.claude_haiku_model,
         ]);
         let merged = claude_desktop::merge(existing.as_deref(), &anthropic_base, &api_key, &models)?;
+        desktop_written = claude_desktop::current(&merged).map(|current| (path.to_string_lossy().to_string(), current));
         if existing.as_deref() != Some(merged.as_str()) {
-            txn.write(&path, &merged)?;
+            txn.stage_text(&path, existing.as_deref(), Some(&merged));
             if let Some(meta) = new_meta {
-                txn.write(&claude_desktop::meta_path()?, &meta)?;
+                txn.stage_text(&claude_desktop::meta_path()?, meta_before.as_deref(), Some(&meta));
+            } else {
+                txn.guard_text(&claude_desktop::meta_path()?, meta_before.as_deref());
             }
             out.wrote_claude_desktop = true;
             out.paths.push(path.to_string_lossy().to_string());
@@ -881,8 +899,9 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
         out.backup_id = backup::create_for_paths(&txn.paths())?;
         txn.commit()?;
     }
-    if req.configure_claude_desktop {
-        if let Err(e) = state::remember_desktop_key(&req.profile_id, &api_key) {
+    if let Some((config, current)) = desktop_written {
+        let entry = state::DesktopEntry { path: &config, base_url: current.base_url.as_deref(), models: &current.models };
+        if let Err(e) = state::remember_desktop_key(&req.profile_id, &api_key, &entry) {
             out.warnings.push(format!("配置已写入，但记录桌面版密钥失败：{}", e));
         }
     }
@@ -928,16 +947,31 @@ pub fn revert_to_official_blocking(codex: bool, claude: bool, claude_desktop: Op
         if let Some(existing) = read_text_optional(&cfg_path)? {
             codex_config::parse(&existing)?;
             let new_cfg = codex_config::revert_to_official(&existing, PROVIDER_ID)?;
-            txn.write(&cfg_path, &new_cfg)?;
+            let journal = paths::ownership_path()?;
+            let previous = crate::atomic::read_optional(&journal)?;
+            // 记录损坏时按「没有记录」处理：不恢复字段、不认领任何密钥，只会更保守
+            let (ownership, journal_corrupt) = crate::codex_ownership::Ownership::from_bytes(previous.as_deref());
+            let restored = if previous.is_some() && !journal_corrupt { ownership.restore_fields(&new_cfg)? } else { new_cfg };
+            txn.stage_text(&cfg_path, Some(&existing), Some(&restored));
 
             // 只有在没有官方登录的情况下才动 auth.json
             let auth_path = paths::auth_path()?;
             let auth_text = read_text_optional(&auth_path)?;
             if codex_auth::inspect(auth_text.as_deref()) == AuthState::ApiKeyOnly {
-                if let Some(stripped) = codex_auth::strip_api_key(auth_text.as_deref())? {
-                    txn.write(&auth_path, &stripped)?;
+                let relay_key = codex_config::has_builtin_relay(&existing) || ownership.is_legacy_relay_key(auth_text.as_deref());
+                // 旧版本写入、没有归属记录的网关密钥：与本工具里保存的某把密钥相同才认作本工具写入
+                let saved_relay_key = relay_key && match codex_auth::current_api_key(auth_text.as_deref()) {
+                    Some(key) => state::profile_with_key(&key)?.is_some(),
+                    None => false,
+                };
+                if ownership.owns_auth(auth_text.as_deref()) || saved_relay_key {
+                    let stripped = codex_auth::strip_api_key(auth_text.as_deref())?;
+                    txn.stage_text(&auth_path, auth_text.as_deref(), stripped.as_deref().filter(|text| text.trim() != "{}"));
+                } else if relay_key {
+                    return Err(AppError::Other("auth.json 里的 API Key 不是本工具保存的任何一把密钥，无法确认归属。为避免删错密钥或将网关密钥发往官方，请先备份并在 Codex 中移除第三方凭据，再切回官方。".into()));
                 }
             }
+            if previous.is_some() { txn.stage(&journal, previous, None); }
         }
     }
 
@@ -949,15 +983,18 @@ pub fn revert_to_official_blocking(codex: bool, claude: bool, claude_desktop: Op
         }
         if let SettingsState::Ok = claude_config::inspect(text.as_deref()) {
             if let Some(reverted) = claude_config::revert(text.as_deref())? {
-                txn.write(&claude_path, &reverted)?;
+                txn.stage_text(&claude_path, text.as_deref(), Some(&reverted));
             }
         }
     }
 
     if claude_desktop {
-        if let claude_desktop::Applied::Config(path) = claude_desktop::applied()? {
-            if let Some(reverted) = claude_desktop::revert(read_text_optional(&path)?.as_deref())? {
-                txn.write(&path, &reverted)?;
+        let meta = read_text_optional(&claude_desktop::meta_path()?)?;
+        if let claude_desktop::Applied::Config(path) = claude_desktop::parse_meta(meta.as_deref()) {
+            txn.guard_text(&claude_desktop::meta_path()?, meta.as_deref());
+            let text = read_text_optional(&path)?;
+            if let Some(reverted) = claude_desktop::revert(text.as_deref())? {
+                txn.stage_text(&path, text.as_deref(), Some(&reverted));
             }
         }
     }
@@ -981,8 +1018,11 @@ pub async fn rebuild_minimal_config(req: ApplyRequest) -> Result<ApplyResult> {
 
 pub fn rebuild_minimal_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     crate::updates::ensure_supported()?;
-    if !req.configure_codex || req.configure_claude {
-        return Err(AppError::Other("重建配置仅支持 Codex".into()));
+    if req.configure_claude && !req.configure_codex && !req.configure_claude_desktop {
+        return repair_claude_env_blocking(req);
+    }
+    if !req.configure_codex || req.configure_claude || req.configure_claude_desktop {
+        return Err(AppError::Other("重建配置仅支持 Codex 和 Claude Code".into()));
     }
     let _guard = backup::lock()?;
     crate::updates::ensure_supported()?;
@@ -996,6 +1036,10 @@ pub fn rebuild_minimal_config_blocking(req: ApplyRequest) -> Result<ApplyResult>
 
     let cfg_path = paths::config_path()?;
     // A broken config cannot establish the original credential-store policy.
+    let original = read_text_optional(&cfg_path)?;
+    if original.as_deref().is_none_or(|text| codex_config::parse(text).is_ok()) {
+        return Err(AppError::Other("当前配置未损坏，请刷新后使用常规写入。".into()));
+    }
     // Rebuild with an independent provider and keep every existing login untouched.
     let auth_mode = AuthMode::BearerToken;
     let profile = state::find_profile(&req.profile_id)?.unwrap_or_default();
@@ -1017,10 +1061,56 @@ pub fn rebuild_minimal_config_blocking(req: ApplyRequest) -> Result<ApplyResult>
     let new_cfg = codex_config::apply("", &provider, false)?;
 
     let mut txn = TwoFileTxn::new();
-    txn.write(&cfg_path, &new_cfg)?;
+    txn.stage_text(&cfg_path, original.as_deref(), Some(&new_cfg));
+    let journal = paths::ownership_path()?;
+    let previous = crate::atomic::read_optional(&journal)?;
+    let (mut ownership, journal_corrupt) = crate::codex_ownership::Ownership::from_bytes(previous.as_deref());
+    if journal_corrupt {
+        out.warnings.push(JOURNAL_CORRUPT.into());
+    }
+    ownership.record(true, "", &new_cfg);
+    txn.stage(&journal, previous, Some(serde_json::to_vec(&ownership)?));
     out.wrote_codex_config = true;
     out.paths.push(cfg_path.to_string_lossy().to_string());
 
+    out.backup_id = backup::create_for_paths(&txn.paths())?;
+    txn.commit()?;
+    Ok(out)
+}
+
+const JOURNAL_CORRUPT: &str = "Codex 归属记录已损坏，已按无记录处理并重新建立；切回官方时不会自动删除无法确认归属的密钥";
+
+/// Claude Code 的 settings.json 里 `env` 不是对象时的显式修复：
+/// 备份后去掉损坏的 env，再按常规合并写入所选密钥；其余设置原样保留。
+fn repair_claude_env_blocking(req: ApplyRequest) -> Result<ApplyResult> {
+    let _guard = backup::lock()?;
+    crate::updates::ensure_supported()?;
+    let api_key = state::load_profile_key(&req.profile_id)?
+        .ok_or_else(|| AppError::Other("这一条还没填 API Key".into()))?;
+    let profile = state::find_profile(&req.profile_id)?.unwrap_or_default();
+    let anthropic_base = profile
+        .anthropic_base(&req.base_url)
+        .ok_or_else(|| AppError::Other("这把密钥没有填 Claude Code 地址，不能给 Claude Code 用".into()))?;
+    let path = paths::claude_settings_path()?;
+    let original = read_text_optional(&path)?;
+    let repaired = claude_config::without_malformed_env(original.as_deref())?;
+    let settings = ClaudeSettings {
+        base_url: anthropic_base,
+        auth_token: api_key,
+        model: req.claude_model,
+        opus_model: req.claude_opus_model,
+        sonnet_model: req.claude_sonnet_model,
+        haiku_model: req.claude_haiku_model,
+    };
+    let merged = claude_config::merge(Some(&repaired), &settings)?;
+    let mut txn = TwoFileTxn::new();
+    txn.stage_text(&path, original.as_deref(), Some(&merged));
+    let mut out = ApplyResult {
+        warnings: vec!["原来的 env 不是对象，已替换为只含本工具设置的 env；原文件在备份里，其余设置未改动".into()],
+        wrote_claude_settings: true,
+        paths: vec![path.to_string_lossy().to_string()],
+        ..Default::default()
+    };
     out.backup_id = backup::create_for_paths(&txn.paths())?;
     txn.commit()?;
     Ok(out)
@@ -1166,8 +1256,10 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
                         && claude_desktop::running();
                     (
                         health::check_claude_desktop(text.as_deref(), &anthropic_base, service, restart_pending),
-                        health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed| {
-                            state::match_sealed_desktop_key(sealed)
+                        health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed, current| {
+                            let config = path.to_string_lossy();
+                            let entry = state::DesktopEntry { path: &config, base_url: current.base_url.as_deref(), models: &current.models };
+                            state::match_sealed_desktop_key(sealed, &entry)
                                 .ok()
                                 .flatten()
                                 .and_then(|id| state::load_profile_key(&id).ok().flatten())

@@ -5,7 +5,7 @@ fn main() {
         let mut failed = false;
         for target in dbkey_lib::launcher::Target::all() {
             let result = dbkey_lib::launcher::validate_launch(dbkey_lib::launcher::LaunchRequest {
-                target, directory: directory.clone(),
+                target, directory: directory.clone(), service: None,
             }).await;
             println!("{target:?}: {}", match &result { Ok(()) => "ready".into(), Err(e) => e.to_string() });
             failed |= result.is_err();

@@ -124,6 +124,11 @@ pub fn check_claude(text: Option<&str>, anthropic_base: &str, service: Service) 
     };
     let value = match serde_json::from_str::<Value>(text) {
         Ok(v) if v.is_object() && v.get("env").is_none_or(|e| e.is_object()) => v,
+        // 只有 env 坏了：可以备份后显式修复，其余设置原样保留
+        Ok(v) if v.is_object() => {
+            out.push(issue("C6", Level::Error, "Claude 配置的 env 不是对象，可备份后修复", Fix::Rebuild));
+            return out;
+        }
         _ => {
             out.push(issue("C1", Level::Error, "Claude 配置文件格式损坏，需手动修复", Fix::None));
             return out;
@@ -208,11 +213,11 @@ pub fn check_claude_desktop(
 }
 
 /// Claude 桌面版当前在用的密钥与模型（只在指向网关时）。
-/// 密钥被桌面版加密后读不出原文，`resolve_sealed` 负责按本工具的写入记录认出是哪一把。
+/// 密钥被桌面版加密后读不出原文，`resolve_sealed` 按本工具的写入记录核对是哪一把。
 pub fn current_claude_desktop(
     text: Option<&str>,
     anthropic_base: &str,
-    resolve_sealed: impl Fn(&str) -> Option<String>,
+    resolve_sealed: impl Fn(&str, &crate::claude_desktop::Current) -> Option<String>,
 ) -> Option<CurrentSetup> {
     let c = crate::claude_desktop::current(text?)?;
     if c.provider.as_deref() != Some("gateway") {
@@ -222,8 +227,8 @@ pub fn current_claude_desktop(
     if host(base).is_none() || host(base) != host(anthropic_base) {
         return None;
     }
-    let raw = c.api_key?;
-    let key = if crate::claude_desktop::is_sealed(&raw) { resolve_sealed(&raw)? } else { raw };
+    let raw = c.api_key.clone()?;
+    let key = if crate::claude_desktop::is_sealed(&raw) { resolve_sealed(&raw, &c)? } else { raw };
     Some(CurrentSetup {
         key,
         model: c.models.into_iter().next().unwrap_or_default(),
@@ -474,15 +479,19 @@ mod tests {
     #[test]
     fn reads_current_desktop_setup() {
         let plain = desktop("gateway", CLAUDE_BASE, r#","inferenceModels":["m1","m2"]"#);
-        let c = current_claude_desktop(Some(&plain), CLAUDE_BASE, |_| None).unwrap();
+        let c = current_claude_desktop(Some(&plain), CLAUDE_BASE, |_, _| None).unwrap();
         assert_eq!((c.key.as_str(), c.model.as_str()), ("sk-1", "m1"));
         let sealed = r#"{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://api.ourzai.com","inferenceGatewayApiKey":"__sealed__:v1:AA"}"#;
-        assert!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_| None).is_none());
-        assert_eq!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_| Some("sk-w".into())).unwrap().key, "sk-w");
+        assert!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_, _| None).is_none());
+        assert_eq!(current_claude_desktop(Some(sealed), CLAUDE_BASE, |_, _| Some("sk-w".into())).unwrap().key, "sk-w");
+        // 未来的密文版本同样只能靠写入记录认出，不当作明文
+        let v2 = sealed.replace("v1:", "v2:");
+        assert!(current_claude_desktop(Some(&v2), CLAUDE_BASE, |_, _| None).is_none());
+        assert_eq!(current_claude_desktop(Some(&v2), CLAUDE_BASE, |raw, _| raw.starts_with("__sealed__:v2:").then(|| "sk-w".into())).unwrap().key, "sk-w");
         let other = desktop("gateway", "https://relay.example", "");
-        assert!(current_claude_desktop(Some(&other), CLAUDE_BASE, |_| Some("x".into())).is_none());
+        assert!(current_claude_desktop(Some(&other), CLAUDE_BASE, |_, _| Some("x".into())).is_none());
         let bedrock = desktop("bedrock", CLAUDE_BASE, "");
-        assert!(current_claude_desktop(Some(&bedrock), CLAUDE_BASE, |_| None).is_none());
+        assert!(current_claude_desktop(Some(&bedrock), CLAUDE_BASE, |_, _| None).is_none());
     }
 
     #[test]
@@ -496,7 +505,16 @@ mod tests {
         let v = check_claude(Some("{ not json"), CLAUDE_BASE, Service::Zai);
         assert_eq!(ids(&v), ["C1"]);
         assert_eq!(v[0].fix, Fix::None);
-        assert_eq!(ids(&check_claude(Some(r#"{"env":1}"#), CLAUDE_BASE, Service::Current)), ["C1"]);
+        assert_eq!(ids(&check_claude(Some("[]"), CLAUDE_BASE, Service::Current)), ["C1"]);
+    }
+
+    #[test]
+    fn c6_malformed_env_offers_backup_repair() {
+        for text in [r#"{"env":1}"#, r#"{"env":null}"#, r#"{"env":[]}"#] {
+            let v = check_claude(Some(text), CLAUDE_BASE, Service::Current);
+            assert_eq!(ids(&v), ["C6"]);
+            assert_eq!(v[0].fix, Fix::Rebuild);
+        }
     }
 
     #[test]

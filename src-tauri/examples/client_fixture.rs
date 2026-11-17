@@ -12,7 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("fixtures require a local HTTP server".into());
     }
     let key = "sk-local-e2e-not-a-real-key";
-    for (name, mode) in [("codex-builtin", AuthMode::OpenAiBuiltin), ("codex-bearer", AuthMode::BearerToken)] {
+    let version = args.get(3).map(String::as_str);
+    for (name, mode) in [("codex-selected", codex_config::select_auth_mode(version, false, false)), ("codex-bearer", codex_config::select_auth_mode(version, true, false))] {
         let dir = root.join(name);
         fs::create_dir(&dir)?;
         let cfg = ProviderConfig {

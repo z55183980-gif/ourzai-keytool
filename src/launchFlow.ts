@@ -2,7 +2,8 @@ import type { ApplyRequest, ApplyResult, Environment, LaunchMode, LaunchRequest,
 
 interface Dependencies {
   validateLaunch: (req: LaunchRequest) => Promise<void>;
-  scanEnvironment: (baseUrl: string, tools?: ToolId[], preferredProfileId?: string) => Promise<Environment>;
+  checkClientVersion?: (target: "codex-cli", ignoreProxy: boolean, latest: boolean) => Promise<{ verifiedBuiltin?: boolean }>;
+  scanEnvironment: (baseUrl: string, tools?: (ToolId | "claude-cli" | "claude-desktop")[], preferredProfileId?: string) => Promise<Environment>;
   applyConfig: (req: ApplyRequest) => Promise<ApplyResult>;
   revertToOfficial: (codex: boolean, claude: boolean, claudeDesktop: boolean) => Promise<string>;
   launchClient: (req: LaunchRequest) => Promise<{ message: string }>;
@@ -28,7 +29,7 @@ export async function launchWithConfiguration(
   applyRequest: ApplyRequest,
   dependencies: Dependencies,
 ): Promise<{ message: string }> {
-  const req: LaunchRequest = { target: `${tool}-${mode}`, directory };
+  const req: LaunchRequest = { target: `${tool}-${mode}`, directory, service };
   await dependencies.validateLaunch(req);
   if (mode === "desktop" && service === "current") return dependencies.launchClient(req);
   await prepareConfiguration(tool, mode, service, applyRequest, dependencies, false, () => {});
@@ -53,16 +54,31 @@ async function prepareConfiguration(
   const request: ApplyRequest = {
     ...applyRequest,
     configureCodex: tool === "codex",
+    codexDesktop: tool === "codex" && mode === "desktop",
     configureClaude: tool === "claude" && !claudeDesktop,
     configureClaudeDesktop: claudeDesktop,
   };
-  const scan = () => dependencies.scanEnvironment(request.baseUrl, [tool], service);
+  const scan = () => dependencies.scanEnvironment(request.baseUrl, [tool === "claude" ? `claude-${mode}` : tool], service);
   const env = await scan();
   const current = env[slot];
   if (current.configurationStatus === "broken") throw new Error("配置文件需要修复，请到密钥页查看详情后再启动");
   if (service === "current") return;
-  const expectedModel = tool === "codex" ? request.model : request.claudeModel;
-  const matches = (value: Environment) => configurationMatches(tool, mode, service, value, expectedModel, request.reasoningEffort);
+  const expectedModel = tool === "codex" ? request.model : claudeDesktop
+    ? [request.claudeModel, request.claudeOpusModel, request.claudeSonnetModel, request.claudeHaikuModel].find(name => name?.trim())?.trim() ?? "" : request.claudeModel;
+  let independent = request.conservative;
+  if (tool === "codex" && mode === "cli" && service !== "official" && env.codex.builtinRelay && !independent) {
+    const version = await dependencies.checkClientVersion?.("codex-cli", request.ignoreProxy, false).catch(() => null);
+    independent = !version?.verifiedBuiltin;
+  }
+  const matches = (value: Environment) => {
+    if (!configurationMatches(tool, mode, service, value, expectedModel, request.reasoningEffort)) return false;
+    if (service === "official") return true;
+    if (tool === "codex") return !(independent && value.codex.builtinRelay);
+    const actual = value[claudeDesktop ? "claudeDesktop" : "claude"].configuredModels;
+    const aliases = [request.claudeOpusModel, request.claudeSonnetModel, request.claudeHaikuModel].map(name => name || "");
+    const expected = claudeDesktop ? [...new Set([request.claudeModel, ...aliases].map(name => name?.trim()).filter(Boolean))] : aliases;
+    return !actual || JSON.stringify(actual) === JSON.stringify(expected);
+  };
   if (matches(env)) return;
   if (!allowWrite) throw new Error("配置尚未保存或已发生变化，请先保存并写入配置，再启动");
 

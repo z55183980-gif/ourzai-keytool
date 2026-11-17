@@ -9,8 +9,8 @@ function fixture(states = [environment(config())], tool = 'codex', mode = 'cli',
   const calls = [], configured = [], applied = [], reverted = [];
   const req = { ...request, ...patch };
   const deps = {
-    validateLaunch: async () => { calls.push('validate'); },
-    scanEnvironment: async (...args) => { calls.push('scan'); assert.deepEqual(args,[req.baseUrl,[tool],service]); return states.length > 1 ? states.shift() : states[0]; },
+    validateLaunch: async launch => { calls.push('validate'); assert.deepEqual(launch,{ target:`${tool}-${mode}`, directory:'C:\\project', service }); },
+    scanEnvironment: async (...args) => { calls.push('scan'); assert.deepEqual(args,[req.baseUrl,[tool === 'claude' ? `claude-${mode}` : tool],service]); return states.length > 1 ? states.shift() : states[0]; },
     applyConfig: async req => { calls.push('apply'); applied.push(req); return { backupId:'backup-1' }; },
     revertToOfficial: async (...args) => { calls.push('revert'); reverted.push(args); return 'backup-2'; },
     launchClient: async () => { calls.push('launch'); return { message:'requested' }; },
@@ -107,6 +107,23 @@ test('already matching configuration avoids writing, including empty custom Clau
 test('spawn failure never writes configuration', async () => {
   const f=fixture([environment(config('configured','key-1'))]); f.deps.launchClient=async()=>{throw Error('spawn failed');};
   await assert.rejects(f.launch(),/spawn failed/); assert.deepEqual(f.calls,['validate','scan']);
+});
+
+test('old or unverified Codex rewrites an otherwise matching builtin relay', async () => {
+  for (const verifiedBuiltin of [false, true]) {
+    const value = config('configured','key-1');
+    const first = environment({...value, builtinRelay:true});
+    const f = fixture([first,environment({...value,builtinRelay:false})]);
+    f.deps.checkClientVersion = async () => ({verifiedBuiltin});
+    await f.save();
+    assert.equal(f.applied.length, verifiedBuiltin ? 0 : 1);
+  }
+});
+
+test('Claude alias changes trigger a write even if the main model matches', async () => {
+  const value = config('configured','key-1','claude-model');
+  const f = fixture([environment({...value,configuredModels:['old','','']}),environment({...value,configuredModels:['new','','']})], 'claude','cli',{claudeOpusModel:'new'});
+  await f.save(); assert.equal(f.applied.length,1);
 });
 
 test('button readiness uses the correct configuration, model and reasoning effort', () => {

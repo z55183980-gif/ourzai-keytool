@@ -21,6 +21,7 @@ pub enum ConfigState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexEnv {
+    pub builtin_relay: bool,
     /// Codex 目录是否存在
     pub home_exists: bool,
     pub home: String,
@@ -50,6 +51,7 @@ pub struct CodexEnv {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeEnv {
+    pub configured_models: Vec<String>,
     pub home_exists: bool,
     pub home: String,
     pub settings_state: SettingsState,
@@ -87,6 +89,10 @@ pub fn scan_selected(provider_id: &str, openai_base_url: &str, claude: bool, cod
 }
 
 pub fn scan_selected_for(provider_id: &str, openai_base_url: &str, claude: bool, codex: bool, preferred: Option<&str>) -> Result<Environment> {
+    scan_targets(provider_id, openai_base_url, claude, claude, codex, preferred)
+}
+
+pub fn scan_targets(provider_id: &str, openai_base_url: &str, claude: bool, desktop: bool, codex: bool, preferred: Option<&str>) -> Result<Environment> {
     // 指向 zAI 网关或任何一把其他服务密钥的地址，都要按密钥核对是不是本工具写的
     let (custom_codex, custom_claude) = crate::state::custom_base_urls().unwrap_or_default();
     let mut codex_urls = vec![openai_base_url.trim_end_matches('/').to_string()];
@@ -94,16 +100,36 @@ pub fn scan_selected_for(provider_id: &str, openai_base_url: &str, claude: bool,
     let mut claude_urls = vec![claude_config::derive_anthropic_base_url(openai_base_url)];
     claude_urls.extend(custom_claude);
     Ok(Environment {
-        codex: if codex { scan_codex(provider_id, &codex_urls, openai_base_url, preferred)? } else { codex_not_read()? },
-        claude_desktop: if claude { scan_claude_desktop(&claude_urls, openai_base_url, preferred)? } else { claude_desktop_not_read()? },
-        claude: if claude { scan_claude(&claude_urls, openai_base_url, preferred)? } else { claude_not_read()? },
+        codex: if codex {
+            // 读不了（权限、编码、密钥状态等）不等于文件损坏：标为「未能识别」，不锁死启动；
+            // 保存时会给出具体原因。真正的 TOML 损坏在 scan_codex 内部判定，并提供重建入口。
+            match scan_codex(provider_id, &codex_urls, openai_base_url, preferred) {
+                Ok(env) => env,
+                Err(error) => CodexEnv {
+                    configuration_status: ConfigurationStatus::Unknown,
+                    status_message: format!("无法读取 Codex 配置：{error}"),
+                    ..codex_not_read()?
+                },
+            }
+        } else { codex_not_read()? },
+        claude_desktop: if desktop { isolated_claude(scan_claude_desktop(&claude_urls, openai_base_url, preferred), claude_desktop_not_read)? } else { claude_desktop_not_read()? },
+        claude: if claude { isolated_claude(scan_claude(&claude_urls, openai_base_url, preferred), claude_not_read)? } else { claude_not_read()? },
     })
 }
 
 const NOT_READ: &str = "尚未读取（用户还没同意读取这个工具的配置）";
 
+/// 一方读取失败不影响另一方。读不了不等于损坏：标为「未能识别」并说明原因，不锁死启动。
+fn isolated_claude(result: Result<ClaudeEnv>, empty: fn() -> Result<ClaudeEnv>) -> Result<ClaudeEnv> {
+    match result {
+        Ok(env) => Ok(env),
+        Err(error) => Ok(ClaudeEnv { configuration_status: ConfigurationStatus::Unknown, status_message: format!("无法读取 Claude 配置：{error}"), ..empty()? }),
+    }
+}
+
 fn codex_not_read() -> Result<CodexEnv> {
     Ok(CodexEnv {
+        builtin_relay: false,
         home_exists: false,
         home: paths::codex_home()?.to_string_lossy().to_string(),
         config_state: ConfigState::Missing,
@@ -124,6 +150,7 @@ fn codex_not_read() -> Result<CodexEnv> {
 
 fn claude_not_read() -> Result<ClaudeEnv> {
     Ok(ClaudeEnv {
+        configured_models: Vec::new(),
         home_exists: false,
         home: paths::claude_home()?.to_string_lossy().to_string(),
         settings_state: SettingsState::Missing,
@@ -210,6 +237,7 @@ fn scan_codex(provider_id: &str, expected_url: &[String], gateway: &str, preferr
     };
 
     Ok(CodexEnv {
+        builtin_relay: cfg_text.as_deref().is_some_and(codex_config::has_builtin_relay),
         home_exists,
         home: home.to_string_lossy().to_string(),
         config_state,
@@ -265,6 +293,10 @@ fn scan_claude(anthropic_base_url: &[String], gateway: &str, preferred: Option<&
     assessment.finish(managed_by_us);
 
     Ok(ClaudeEnv {
+        configured_models: {
+            let value = text.as_deref().and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+            [claude_config::KEY_DEFAULT_OPUS, claude_config::KEY_DEFAULT_SONNET, claude_config::KEY_DEFAULT_HAIKU].iter().map(|name| value.as_ref().and_then(|value| value.get("env")?.get(*name)?.as_str()).unwrap_or_default().to_owned()).collect()
+        },
         home_exists,
         home: home.to_string_lossy().to_string(),
         settings_state,
@@ -309,11 +341,16 @@ fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&st
     let settings_state = claude_desktop::inspect(text.as_deref());
     let current = text.as_deref().and_then(claude_desktop::current);
     let mut assessment = assess_claude_desktop(text.as_deref(), expected);
-    // 明文：直接按密钥对；密文：只能认「最近一次是我们写的那把」
-    let key = match assessment.key.as_deref() {
-        Some(k) if claude_desktop::is_sealed(k) => crate::state::match_sealed_desktop_key(k)?
-            .map(|id| crate::state::load_profile_key(&id)).transpose()?.flatten(),
-        k => k.map(str::to_string),
+    // 明文：直接按密钥对；密文：只认本工具写入后、条目/地址/模型都没变时由桌面版加密的那把
+    let key = match (assessment.key.as_deref(), path.as_deref(), current.as_ref()) {
+        (Some(k), Some(config), Some(c)) if claude_desktop::is_sealed(k) => {
+            let config = config.to_string_lossy();
+            let entry = crate::state::DesktopEntry { path: &config, base_url: c.base_url.as_deref(), models: &c.models };
+            crate::state::match_sealed_desktop_key(k, &entry)?
+                .map(|id| crate::state::load_profile_key(&id)).transpose()?.flatten()
+        }
+        (Some(k), _, _) if claude_desktop::is_sealed(k) => None,
+        (k, _, _) => k.map(str::to_string),
     };
     let active_profile_id = crate::state::match_profile_for(key.as_deref(), current.as_ref().and_then(|c| c.base_url.as_deref()), false, gateway, preferred)?;
     let managed_by_us = active_profile_id.is_some();
@@ -325,10 +362,11 @@ fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&st
     let (current_key_masked, adoptable) = live_summary(text.as_deref().and_then(live_claude_desktop).as_ref(), managed_by_us);
     if !managed_by_us && assessment.key.as_deref().is_some_and(claude_desktop::is_sealed) {
         assessment.message =
-            "网关地址已配置，密钥已被 Claude 桌面版加密保存，无法确认是哪一把；启动时会重新写入所选密钥".into();
+            "桌面版已加密保存密钥，无法确认是哪一把；保存配置会重新写入所选密钥。".into();
     }
     assessment.finish(managed_by_us);
     Ok(ClaudeEnv {
+        configured_models: current.as_ref().map(|entry| entry.models.clone()).unwrap_or_default(),
         home_exists: home.is_dir(),
         home: path.unwrap_or(home).to_string_lossy().to_string(),
         settings_state,

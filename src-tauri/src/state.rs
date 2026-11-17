@@ -113,6 +113,44 @@ pub struct DesktopKeyRecord {
     /// 第一次看到的密文；之后密文变了说明有人在桌面版里改过密钥
     #[serde(default)]
     pub sealed: Option<String>,
+    /// 写入时的配置条目、网关地址和模型。密文出现时三者都必须与写入时一致才认作这把密钥；
+    /// 旧版本留下的记录没有这些字段，一律不认，重新保存一次即可。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+}
+
+/// 桌面版配置条目里与密钥一起写入的那几项，用来核对密文是不是本工具写入后加密的结果。
+pub struct DesktopEntry<'a> {
+    pub path: &'a str,
+    pub base_url: Option<&'a str>,
+    pub models: &'a [String],
+}
+
+impl DesktopKeyRecord {
+    /// 认出密文就返回密钥编号。首次见到的密文只在条目、地址、模型都与写入时一致、
+    /// 且该密钥未被替换时才绑定；绑定后密文一变就不再认。
+    /// 残余风险：写入后、首次扫描前若在桌面版里换成同地址同模型的另一把密钥，仍会被误认。
+    fn match_sealed(&mut self, profile_key: Option<&str>, sealed: &str, entry: &DesktopEntry) -> Option<String> {
+        if profile_key.map(key_hash).as_deref() != Some(self.key_hash.as_str()) {
+            return None;
+        }
+        let same_url = self.base_url.as_deref().zip(entry.base_url)
+            .is_some_and(|(a, b)| a.trim_end_matches('/') == b.trim_end_matches('/'));
+        if self.path.as_deref() != Some(entry.path) || !same_url || self.models != entry.models {
+            return None;
+        }
+        match self.sealed.as_deref() {
+            Some(bound) => (bound == sealed).then(|| self.profile_id.clone()),
+            None => {
+                self.sealed = Some(sealed.to_string());
+                Some(self.profile_id.clone())
+            }
+        }
+    }
 }
 
 pub fn key_hash(key: &str) -> String {
@@ -123,43 +161,50 @@ pub fn key_hash(key: &str) -> String {
         .collect()
 }
 
-pub fn remember_desktop_key(profile_id: &str, key: &str) -> Result<()> {
+/// 写入桌面版后记下这次写入的密钥和条目；密文要等桌面版自己加密后才出现。
+pub fn remember_desktop_key(profile_id: &str, key: &str, entry: &DesktopEntry) -> Result<()> {
     let record = DesktopKeyRecord {
         profile_id: profile_id.into(),
         key_hash: key_hash(key),
         sealed: None,
+        path: Some(entry.path.into()),
+        base_url: entry.base_url.map(str::to_string),
+        models: entry.models.to_vec(),
     };
     update(|st| st.claude_desktop_key = Some(record))
 }
 
-pub fn forget_desktop_key() -> Result<()> {
-    update(|st| st.claude_desktop_key = None)
-}
-
-/// 桌面版里的密文是不是我们最近写的那把：是就返回密钥编号。
-/// 写入后第一次见到的密文认作那把密钥加密后的样子，并记下来。
-pub fn match_sealed_desktop_key(sealed: &str) -> Result<Option<String>> {
+/// 桌面版里的密文是不是本工具最近写入的那把：是就返回密钥编号。
+pub fn match_sealed_desktop_key(sealed: &str, entry: &DesktopEntry) -> Result<Option<String>> {
     let _guard = STATE_LOCK.lock().map_err(|_| AppError::Other("密钥状态锁不可用，请重启".into()))?;
     let mut st = load_inner()?;
-    let Some(record) = st.claude_desktop_key.as_mut() else {
-        return Ok(None);
-    };
-    let Some(key) = load_profile_key(&record.profile_id)? else {
-        return Ok(None);
-    };
-    if key_hash(&key) != record.key_hash {
+    let Some(record) = st.claude_desktop_key.as_mut() else { return Ok(None) };
+    let was_bound = record.sealed.is_some();
+    let key = load_profile_key(&record.profile_id)?;
+    let matched = record.match_sealed(key.as_deref(), sealed, entry);
+    if matched.is_some() && !was_bound {
+        save(&st)?;
+    }
+    Ok(matched)
+}
+
+/// 本工具里保存过这把密钥的密钥编号（不看服务地址）。
+/// 用来确认旧版本写进 auth.json、没有归属记录的网关密钥确实来自本工具。
+pub fn profile_with_key(key: &str) -> Result<Option<String>> {
+    let key = key.trim();
+    if key.is_empty() {
         return Ok(None);
     }
-    match record.sealed.as_deref() {
-        Some(s) if s == sealed => Ok(Some(record.profile_id.clone())),
-        Some(_) => Ok(None),
-        None => {
-            record.sealed = Some(sealed.to_string());
-            let id = record.profile_id.clone();
-            save(&st)?;
-            Ok(Some(id))
+    for profile in load()?.profiles {
+        if load_profile_key(&profile.id)?.as_deref().map(str::trim) == Some(key) {
+            return Ok(Some(profile.id));
         }
     }
+    Ok(None)
+}
+
+pub fn forget_desktop_key() -> Result<()> {
+    update(|st| st.claude_desktop_key = None)
 }
 
 pub fn load() -> Result<AppState> {
@@ -424,6 +469,41 @@ pub fn mask(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sealed_desktop_key_binds_only_to_the_unchanged_entry_it_was_written_to() {
+        let models = vec!["m1".to_string()];
+        let entry = |path, base_url, models| DesktopEntry { path, base_url, models };
+        let fresh = || DesktopKeyRecord {
+            profile_id: "A".into(), key_hash: key_hash("sk-a"), sealed: None,
+            path: Some("cfg-1".into()), base_url: Some("https://gw.example".into()), models: models.clone(),
+        };
+        let written = entry("cfg-1", Some("https://gw.example/"), &models);
+
+        // 首次密文：条目、地址、模型都没变才绑定；之后密文变了就不再认
+        let mut record = fresh();
+        assert_eq!(record.match_sealed(Some("sk-a"), "__sealed__:v1:X", &written).as_deref(), Some("A"));
+        assert_eq!(record.match_sealed(Some("sk-a"), "__sealed__:v1:X", &written).as_deref(), Some("A"));
+        assert!(record.match_sealed(Some("sk-a"), "__sealed__:v1:Y", &written).is_none());
+
+        // 切换了配置条目、改了地址或模型、密钥被替换，都不绑定
+        let other_models = vec!["m2".to_string()];
+        for (key, e) in [
+            (Some("sk-a"), entry("cfg-2", Some("https://gw.example"), &models)),
+            (Some("sk-a"), entry("cfg-1", Some("https://other.example"), &models)),
+            (Some("sk-a"), entry("cfg-1", Some("https://gw.example"), &other_models)),
+            (Some("sk-b"), entry("cfg-1", Some("https://gw.example"), &models)),
+            (None, entry("cfg-1", Some("https://gw.example"), &models)),
+        ] {
+            let mut record = fresh();
+            assert!(record.match_sealed(key, "__sealed__:v2:Z", &e).is_none());
+            assert!(record.sealed.is_none());
+        }
+
+        // 旧版本记录缺少条目信息：不认
+        let mut legacy = DesktopKeyRecord { profile_id: "A".into(), key_hash: key_hash("sk-a"), ..Default::default() };
+        assert!(legacy.match_sealed(Some("sk-a"), "__sealed__:v1:X", &written).is_none());
+    }
 
     #[test]
     fn duplicate_keys_match_requested_profile_only_at_its_own_endpoint() {

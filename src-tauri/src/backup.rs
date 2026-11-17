@@ -59,6 +59,7 @@ const DESKTOP_META: &str = "claude-desktop-meta.json";
 /// Resolve trusted locations without reading another client's configuration.
 fn all_targets() -> Result<Vec<(String, PathBuf)>> {
     let mut files = targets(true, true)?;
+    files.push(("codex-ownership.json".into(), paths::ownership_path()?));
     files.push((DESKTOP_META.into(), crate::claude_desktop::meta_path()?));
     Ok(files)
 }
@@ -227,6 +228,12 @@ fn restore_at(root: &Path, id: &str, allowed: &[(String, PathBuf)], before_deskt
     if plan.is_empty() {
         return Err(AppError::Other("备份中没有可恢复的文件".into()));
     }
+    if plan.iter().any(|(name, _, _)| matches!(name.as_str(), "config.toml" | "auth.json"))
+        && !plan.iter().any(|(name, _, _)| name == "codex-ownership.json") {
+        if let Some((name, path)) = allowed.iter().find(|(name, _)| name == "codex-ownership.json") {
+            plan.push((name.clone(), path.clone(), None));
+        }
+    }
     let mut txn = TwoFileTxn::new();
     for (_, target, bytes) in &plan {
         txn.set(target, bytes.clone())?;
@@ -336,7 +343,7 @@ mod tests {
         // Current selection may have changed or metadata may be broken; original target is still valid.
         fs::write(&meta, "different-selection").unwrap();
         let mut state = crate::state::AppState {
-            claude_desktop_key: Some(crate::state::DesktopKeyRecord { profile_id: "B".into(), key_hash: crate::state::key_hash("plaintext-B"), sealed: None }),
+            claude_desktop_key: Some(crate::state::DesktopKeyRecord { profile_id: "B".into(), key_hash: crate::state::key_hash("plaintext-B"), sealed: None, ..Default::default() }),
             ..Default::default()
         };
         restore_at(&root, &id, &allowed, || {

@@ -29,7 +29,7 @@ export interface LauncherScan {
   platform: string;
   installations: LauncherInstallation[];
 }
-export interface LaunchRequest { target: LaunchTarget; directory: string }
+export interface LaunchRequest { target: LaunchTarget; directory: string; service?: string }
 
 export interface Profile {
   id: string;
@@ -84,6 +84,7 @@ export interface SaveProfileRequest {
 }
 
 export interface CodexEnv {
+  builtinRelay?: boolean;
   homeExists: boolean;
   home: string;
   configState: ConfigState;
@@ -105,6 +106,7 @@ export interface CodexEnv {
 }
 
 export interface ClaudeEnv {
+  configuredModels?: string[];
   homeExists: boolean;
   home: string;
   settingsState: SettingsState;
@@ -178,6 +180,7 @@ export interface ApplyRequest {
   ignoreProxy: boolean;
 
   configureCodex: boolean;
+  codexDesktop?: boolean;
   model: string;
   reasoningEffort: string;
   cleanupResidue: boolean;

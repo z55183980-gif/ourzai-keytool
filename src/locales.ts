@@ -5,6 +5,20 @@
  * 带 {占位} 的条目也用来匹配后端返回的同款提示（见 i18n.ts 的模板匹配）。
  */
 export const DICT: Record<string, [string, string]> = {
+  "备份并修复": ["備份並修復", "Back up and repair"],
+  "桌面版不支持备份重建，请手动修复配置": ["桌面版不支援備份重建，請手動修復設定", "Backup rebuild is not available for desktop apps. Repair the configuration manually."],
+  "Claude 配置的 env 不是对象，可备份后修复": ["Claude 設定的 env 不是物件，可備份後修復", "Claude settings have a non-object env. It can be repaired after a backup."],
+  "原来的 env 不是对象，已替换为只含本工具设置的 env；原文件在备份里，其余设置未改动": ["原本的 env 不是物件，已替換為只含本工具設定的 env；原檔案在備份中，其餘設定未變更", "The non-object env was replaced with one containing only this tool's settings. The original file is in the backup; other settings were not changed."],
+  "Codex 归属记录已损坏，已按无记录处理并重新建立；切回官方时不会自动删除无法确认归属的密钥": ["Codex 歸屬紀錄已損壞，已按無紀錄處理並重新建立；切回官方時不會自動刪除無法確認歸屬的密鑰", "The Codex ownership record was corrupt and has been rebuilt. Keys of unconfirmed origin will not be removed automatically when switching back to official."],
+  "auth.json 里的 API Key 不是本工具保存的任何一把密钥，无法确认归属。为避免删错密钥或将网关密钥发往官方，请先备份并在 Codex 中移除第三方凭据，再切回官方。": ["auth.json 中的 API Key 不是本工具儲存的任何一把密鑰，無法確認歸屬。為避免刪錯密鑰或將網關密鑰傳送至官方，請先備份並在 Codex 中移除第三方憑證，再切回官方。", "The API key in auth.json is not one saved in this tool, so its origin cannot be confirmed. To avoid deleting the wrong key or sending a gateway key to the official service, back up and remove the third-party credential in Codex before switching back."],
+  "重建配置仅支持 Codex 和 Claude Code": ["重建設定只支援 Codex 和 Claude Code", "Rebuilding config is only available for Codex and Claude Code"],
+  "强制使用独立网关配置，不覆盖官方登录。": ["強制使用獨立網關設定，不覆寫官方登入。", "Use a separate gateway provider and preserve official sign-in."],
+  "桌面版已加密保存密钥，无法确认是哪一把；保存配置会重新写入所选密钥。": ["桌面版已加密儲存密鑰，無法確認是哪一把；儲存設定會重新寫入所選密鑰。", "The desktop app encrypted its key, so it cannot be identified. Saving the configuration writes the selected key again."],
+  "已请求启动；检测到项目级设置，实际服务和模型请在终端确认。": ["已要求啟動；偵測到專案設定，請在終端確認服務和模型。", "Launch requested. Project settings were found; confirm the effective service and model in the terminal."],
+  "此 Codex CLI 未验证支持当前网关写法；请在密钥页重新写入独立 provider 后再启动。": ["未驗證此 Codex CLI 支援目前網關設定；請在密鑰頁重新寫入獨立 provider 再啟動。", "This Codex CLI has not been verified with this gateway format. Reapply the key using a separate provider before launching."],
+  "无法确认 CLI 身份或版本，请选择对应产品的官方可执行程序。": ["無法確認 CLI 身分或版本，請選擇對應產品的官方執行檔。", "Could not verify the CLI identity or version. Select the official executable for this product."],
+  "此处核对用户配置；项目设置或组织策略可能覆盖服务、模型和凭据。": ["此處核對使用者設定；專案設定或機構政策可能覆蓋服務、模型及憑證。", "User settings only. Project settings or organization policies may override the service, model, or credentials."],
+  "第三方 Claude 服务未进行推理连通性验证。": ["未驗證第三方 Claude 服務的推理連線。", "Inference connectivity to this third-party Claude service has not been verified."],
   "当前处理器架构没有可用安装包，请查看官方系统要求。": ["目前處理器架構沒有可用安裝套件，請查看官方系統要求。", "No installer is available for this processor architecture. Check the official system requirements."],
   "无法打开安装文件夹，请检查系统权限后重试。": ["無法開啟安裝資料夾，請檢查系統權限後重試。", "Could not open the installer folder. Check system permissions and retry."],
   "切换服务后，请完全退出并重启客户端。": ["切換服務後，請完全退出並重新啟動用戶端。", "After switching services, fully quit and relaunch the client."],

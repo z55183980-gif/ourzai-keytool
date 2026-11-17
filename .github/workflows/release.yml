@@ -26,7 +26,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cli-compatibility:
+    if: github.repository == 'z55183980-gif/ourzai-keytool'
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { codex: '0.100.0', claude: '2.1.20' }
+          - { codex: '0.167.0', claude: '2.1.322' }
+          - { codex: '0.169.0', claude: '2.1.326' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $prefix = Join-Path $env:RUNNER_TEMP 'compat-clients'
+          npm install --no-audit --no-fund --prefix $prefix '@openai/codex@${{ matrix.codex }}' '@anthropic-ai/claude-code@${{ matrix.claude }}'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/real-client-e2e.py --codex "$prefix/node_modules/.bin/codex.ps1" --claude "$prefix/node_modules/.bin/claude.ps1"
   build:
+    needs: cli-compatibility
     # Release credentials and artifacts belong to this repository only.
     if: github.repository == 'z55183980-gif/ourzai-keytool'
     runs-on: ${{ matrix.os }}

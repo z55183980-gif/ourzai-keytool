@@ -84,9 +84,11 @@ type RepairState =
   | { phase: "result"; level: "ok" | "warn" | "error"; title: string; detail?: string; steps?: string[]; backupId?: string; next?: LogAction; ai?: boolean };
 /** 「启动后遇到问题？」的预设症状：代替原来的报错输入框，选中的那条作为描述交给 zAI */
 const SYMPTOMS = ["提示 401 / 认证失败", "提示模型不存在 / 404", "连不上 / 请求超时", "打开就闪退 / 没反应"];
-/** 体检已经能确定的写入类修复：Codex 配置损坏先重建，其次重写 */
-const localFix = (tool: ToolId, issues: HealthIssue[]): HealthFix | null =>
-  tool === "codex" && issues.some(i => i.fix === "rebuild") ? "rebuild"
+/** 备份后重建：Codex 重建 config.toml；Claude Code（CLI）只修复损坏的 env。桌面版没有这条路 */
+export const canRebuild = (tool: ToolId, mode: LaunchMode): boolean => tool === "codex" || (tool === "claude" && mode === "cli");
+/** 体检已经能确定的写入类修复：配置损坏先备份修复，其次重写 */
+const localFix = (tool: ToolId, mode: LaunchMode, issues: HealthIssue[]): HealthFix | null =>
+  canRebuild(tool, mode) && issues.some(i => i.fix === "rebuild") ? "rebuild"
     : issues.some(i => i.fix === "rewrite") ? "rewrite" : null;
 const errText = (e: unknown) => String(e).replace(/^Error:\s*/, "");
 
@@ -426,9 +428,9 @@ export function Launcher(props: {
   const fixAction = (tool: ToolId, fix: HealthFix): LogAction | null => {
     const c = ctxFor(tool);
     const pickKey: LogAction = { label: t("选择密钥"), run: () => onToolPage(tool, focusServices) };
-    // rebuild_minimal_config only rebuilds Codex's config.toml. Never expose it
-    // as a possible action for Claude, even if a model returns the wrong action.
-    if (fix === "rebuild" && tool !== "codex") return null;
+    // rebuild_minimal_config rebuilds Codex's config.toml or repairs Claude Code's malformed env.
+    // Never expose it for desktop apps, even if a model returns the wrong action.
+    if (fix === "rebuild" && !canRebuild(tool, modeOf(tool))) return null;
     switch (fix) {
       case "none": return null;
       case "keys": return { label: t("管理密钥"), run: () => props.onFix(tool, null, "keys", modeOf(tool)) };
@@ -441,7 +443,7 @@ export function Launcher(props: {
         const id = c.fixProfile;
         if (!id) return pickKey;
         return {
-          label: fix === "rebuild" ? t("重建配置") : t("修复"),
+          label: fix === "rebuild" ? t(tool === "codex" ? "重建配置" : "备份并修复") : t("修复"),
           run: () => onToolPage(tool, () => void applyFix(tool, fix, false)),
         };
       }
@@ -503,8 +505,8 @@ export function Launcher(props: {
       fixAction(tool, fix)?.run();
       return;
     }
-    if (fix === "rebuild" && tool !== "codex") {
-      setRepair(tool, { phase: "result", level: "error", title: t("重建配置仅支持 Codex") });
+    if (fix === "rebuild" && !canRebuild(tool, modeOf(tool))) {
+      setRepair(tool, { phase: "result", level: "error", title: t("桌面版不支持备份重建，请手动修复配置") });
       return;
     }
     if (!c.fixProfile) {
@@ -561,7 +563,7 @@ export function Launcher(props: {
   const startRepair = async (tool: ToolId, symptom = "") => {
     const issues = health[tool] ?? [];
     const c = ctxFor(tool);
-    const local = localFix(tool, issues);
+    const local = localFix(tool, modeOf(tool), issues);
     const blocked = issues.some(i => i.id === "K1" || i.id === "K2");
     const group = `ai-${tool}`, batch = props.nextBatch();
     props.log("cmd", symptom ? `${t("启动后遇到问题")} · ${healthName(tool)}${t("：")}${t(symptom)}` : `${t("一键修复")} · ${healthName(tool)}`, { group, batch });
@@ -586,7 +588,7 @@ export function Launcher(props: {
     }
     props.log("ai", d.cause, { group, batch });
     d.steps.forEach((step, i) => props.log("path", `${i + 1}. ${step}`));
-    const options = (d.ask?.options ?? []).filter(o => o.action !== "none" && !(o.action === "rebuild" && tool !== "codex"));
+    const options = (d.ask?.options ?? []).filter(o => o.action !== "none" && !(o.action === "rebuild" && !canRebuild(tool, modeOf(tool))));
     if (d.ask && options.length) {
       setRepair(tool, { phase: "ask", question: d.ask.question, cause: d.cause, options });
       return;
@@ -692,7 +694,7 @@ export function Launcher(props: {
     const errors = issues?.filter(i => i.level === "error") ?? [];
     const warns = issues?.filter(i => i.level === "warn") ?? [];
     /** 能修：体检能确定修法，或者有 zAI Key 可以让 AI 看 */
-    const canRepair = (list: HealthIssue[]) => list.length > 0 && (!!localFix(tool, list) || !!aiProfile);
+    const canRepair = (list: HealthIssue[]) => list.length > 0 && (!!localFix(tool, modeOf(tool), list) || !!aiProfile);
     /** 要你自己处理的错误（密钥失效、连不上、模型不可用）：主按钮直接给对应动作 */
     const blocker = errors.find(i => i.fix === "keys" || i.fix === "settings" || i.fix === "model");
     const blockerAction = blocker ? fixAction(tool, blocker.fix) : null;
@@ -820,7 +822,8 @@ export function Launcher(props: {
             { off: !p.hasKey || !supportsTool(p, tool), monoFirst: p.hasKey && supportsTool(p, tool), edit: true }))}
         </div>
 
-        {/* 模型：只在当前生效的是本工具里的密钥时出现；改完立即写入配置 */}
+        {mode === "cli" && <small className="dim">{t("此处核对用户配置；项目设置或组织策略可能覆盖服务、模型和凭据。")}</small>}
+        {tool === "claude" && selected?.custom && <small className="dim">{t("第三方 Claude 服务未进行推理连通性验证。")}</small>}
         {selected?.hasKey && <button type="button" className="workdir-row model-row" aria-haspopup="dialog" aria-label={t("{tool} 模型：{model}，点击更换", { tool: meta.name, model: model || t(selected.custom ? "客户端默认" : "未设置") })} disabled={disabled} onClick={() => openModel(tool, selected)}>
           <span className="config-label">{t("模型")}</span><span className="config-value"><strong className="mono" title={model}>{model || t(selected.custom ? "客户端默认" : "未设置")}</strong>{tool === "codex" && <span className="model-extra">{t("思考深度")} · {effortLabel(selected.codexEffort || "medium")}</span>}</span><span className="service-switch">{t("更换")}</span>
         </button>}

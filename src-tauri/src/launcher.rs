@@ -453,8 +453,8 @@ pub(crate) fn cli_version(target: Target) -> Result<(String, String)> {
     let output = crate::process::output(&mut cmd, std::time::Duration::from_secs(15))?;
     if !output.status.success() { return Err(AppError::Other("CLI 版本检查失败，请在终端运行 --version 检查".into())); }
     let text = String::from_utf8_lossy(&output.stdout);
-    let version = crate::client_setup::parse_version_output(&text)
-        .ok_or_else(|| AppError::Other("无法识别 CLI 版本，请查看官方更新说明".into()))?;
+    let version = crate::client_setup::target_version(target, &text)
+        .ok_or_else(|| AppError::Other("无法确认 CLI 身份或版本，请选择对应产品的官方可执行程序。".into()))?;
     Ok((version, path.to_string_lossy().into()))
 }
 
@@ -558,6 +558,9 @@ pub(crate) fn mac_script_dispatch(shell: &str) -> String {
 pub struct LaunchRequest {
     pub target: Target,
     pub directory: String,
+    /// 本次启动选用的服务：密钥编号、"current"（沿用当前配置）或 "official"。老前端不传。
+    #[serde(default)]
+    pub service: Option<String>,
 }
 fn working_directory(value: &str) -> Result<PathBuf> {
     let path = PathBuf::from(value);
@@ -710,16 +713,42 @@ pub async fn validate_launch(req: LaunchRequest) -> Result<()> {
     tauri::async_runtime::spawn_blocking(move || {
         prepare(&req)?;
         // Catch missing Node, policy restrictions and incompatible binaries before writing keys.
-        if req.target.cli() { cli_version(req.target)?; }
+        if req.target.cli() {
+            let (version, _) = cli_version(req.target)?;
+            if req.target == Target::CodexCli && codex_service_needs_rewrite(req.service.as_deref(), &version, || {
+                Ok(atomic::read_text_optional(&paths::config_path()?)?.unwrap_or_default())
+            })? {
+                return Err(AppError::Other("此 Codex CLI 未验证支持当前网关写法；请在密钥页重新写入独立 provider 后再启动。".into()));
+            }
+        }
         Ok(())
     })
         .await
         .map_err(|e| AppError::Other(e.to_string()))?
 }
+/// 只拦「要启动本工具里的某把密钥，但现有配置是该版本未验证的内置网关写法」。
+/// 沿用当前配置是用户自己的选择，切回官方会在写入阶段处理，两者都不在这里拦。
+fn codex_service_needs_rewrite(service: Option<&str>, version: &str, config: impl FnOnce() -> Result<String>) -> Result<bool> {
+    let keytool_service = service.is_some_and(|s| !s.is_empty() && s != "current" && s != "official");
+    if !keytool_service || crate::codex_config::verified_builtin(Some(version)) {
+        return Ok(false);
+    }
+    Ok(crate::codex_config::has_builtin_relay(&config()?))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchReceipt {
     pub message: String,
+}
+fn cli_receipt(req: &LaunchRequest) -> LaunchReceipt {
+    let files: &[&str] = if req.target == Target::CodexCli { &[".codex/config.toml"] } else { &[".claude/settings.json", ".claude/settings.local.json"] };
+    let home = dirs::home_dir();
+    let project = Path::new(&req.directory).ancestors().any(|directory| {
+        if Some(directory) == home.as_deref() { return false; }
+        files.iter().any(|file| directory.join(file).is_file())
+    });
+    LaunchReceipt { message: if project { "已请求启动；检测到项目级设置，实际服务和模型请在终端确认。" } else { "已请求启动，请在终端确认。" }.into() }
 }
 fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
     crate::updates::ensure_supported()?;
@@ -736,7 +765,7 @@ fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
             let detail = String::from_utf8_lossy(&output.stderr);
             return Err(AppError::Other(format!("启动请求失败，请检查终端、程序路径和系统自动化权限：{}", detail.trim())));
         }
-        return Ok(LaunchReceipt { message: if req.target.cli() { "已请求启动，请在终端确认。" } else { "已请求启动，请在应用内确认登录。" }.into() });
+        return Ok(if req.target.cli() { cli_receipt(&req) } else { LaunchReceipt { message: "已请求启动，请在应用内确认登录。".into() } });
     }
     // explorer.exe exits with 1 even after it has activated a packaged (MSIX/Store) app,
     // and reports real activation failures in its own dialog, so its exit code means nothing.
@@ -789,6 +818,25 @@ pub async fn launch_client(req: LaunchRequest) -> Result<LaunchReceipt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn codex_preflight_only_blocks_keytool_services_on_unverified_builtin_relay() {
+        let relay = || Ok("openai_base_url='https://relay.invalid/v1'".to_string());
+        let independent = || Ok("model_provider='dbkey'
+[model_providers.dbkey]
+base_url='https://relay.invalid/v1'".to_string());
+        // 旧版本 + 内置网关写法 + 选用本工具的密钥：要求先重新写入
+        assert!(codex_service_needs_rewrite(Some("profile-1"), "0.100.0", relay).unwrap());
+        // 沿用当前配置、切回官方、老前端不传服务：不拦
+        for service in [Some("current"), Some("official"), Some(""), None] {
+            assert!(!codex_service_needs_rewrite(service, "0.100.0", relay).unwrap());
+        }
+        // 0.167.0 起（含中间版本和后续版本）放行；独立 provider 不受版本影响
+        for version in ["0.167.0", "0.168.0", "0.169.0", "0.170.0", "1.0.0"] {
+            assert!(!codex_service_needs_rewrite(Some("profile-1"), version, || panic!("不应读取配置")).unwrap());
+        }
+        assert!(!codex_service_needs_rewrite(Some("profile-1"), "0.100.0", independent).unwrap());
+    }
+
     #[test]
     fn mac_dispatch_quotes_paths_and_pins_config_directory() {
         use base64::Engine;

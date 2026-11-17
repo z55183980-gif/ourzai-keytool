@@ -400,6 +400,7 @@ export default function App() {
         wireApi: remote?.wire_api || "responses",
         ignoreProxy,
         configureCodex: tool === "codex",
+        codexDesktop: tool === "codex" && desktop,
         model: modelFor("codex", p),
         reasoningEffort: p?.codexEffort || "medium",
         cleanupResidue: cleanup,
@@ -447,7 +448,7 @@ export default function App() {
         wireApi: remote?.wire_api || "responses", ignoreProxy,
         configureCodex: tool === "codex", configureClaude: tool === "claude",
         model: modelFor("codex", p), reasoningEffort: p?.codexEffort || "medium",
-        cleanupResidue: false, overwriteOfficialAuth: false, conservative: false,
+        cleanupResidue: false, overwriteOfficialAuth: false, conservative,
         claudeModel: modelFor("claude", p),
         claudeOpusModel: claudeAliases.opus, claudeSonnetModel: claudeAliases.sonnet, claudeHaikuModel: claudeAliases.haiku,
       };
@@ -509,8 +510,8 @@ export default function App() {
   };
   /** 体检 / AI 修复的动作。写入了配置时返回备份号（可撤销），其余（跳转页面、没写入）返回 null */
   const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<string | null> => {
-    if (fix === "rebuild" && tool !== "codex") {
-      setToast({ kind: "err", text: t("重建配置仅支持 Codex") });
+    if (fix === "rebuild" && tool === "claude" && mode === "desktop") {
+      setToast({ kind: "err", text: t("桌面版不支持备份重建，请手动修复配置") });
       return null;
     }
     if (fix === "keys") { setPage("keys"); return null; }
@@ -630,7 +631,7 @@ export default function App() {
       <main className={`workspace-main ${page === "claude" || page === "codex" ? "fill" : ""}`}>
       <Launcher page={page} busy={busy !== null} profiles={profiles} env={env}
         onLaunch={launch} onSaveConfiguration={saveConfiguration} onKeys={() => setPage("keys")}
-        onEditProfile={profile => { setPage("keys"); startEdit(profile); }}
+        onEditProfile={startEdit}
         onSettings={() => setPage("settings")} onAdvanced={() => setShowAdvanced(true)}
         onRefresh={async () => { await reload(baseUrl); }} checkHealth={checkHealth} onFix={fixHealth} onRestore={restore} diagnose={diagnose} onAlerts={setToolAlerts} onConsole={openSite}
         modelFor={modelFor} catalogKey={Object.keys(catalogs).join()} onSaveModel={saveModel} listModels={listModels}
@@ -671,24 +672,6 @@ export default function App() {
         );
       })}
       </section>}
-
-      {/* 编辑 / 新建：弹窗 */}
-      {draft && (() => {
-        const editingProfile = draft.id ? profiles.find(p => p.id === draft.id) : undefined;
-        return (
-          <Editor
-            title={editingProfile ? t("编辑「{name}」", { name: editingProfile.name }) : t("添加密钥")}
-            hint={editingProfile ? undefined : t("保存后在 Claude / Codex 页面选择密钥和模型。")}
-            draft={draft}
-            defaultServiceUrl={defaultServiceUrl}
-            setDraft={setDraft}
-            busy={busy}
-            onCancel={() => setDraft(null)}
-            onSave={saveDraft}
-            onDelete={editingProfile ? () => removeProfile(editingProfile) : undefined}
-          />
-        );
-      })()}
 
       {showLogin && (
         <LoginPanel
@@ -743,6 +726,24 @@ export default function App() {
 
       </div>}
 
+      {/* 编辑 / 新建：在当前页面上打开共享弹窗，不切换导航 */}
+      {draft && (() => {
+        const editingProfile = draft.id ? profiles.find(p => p.id === draft.id) : undefined;
+        return (
+          <Editor
+            title={editingProfile ? t("编辑「{name}」", { name: editingProfile.name }) : t("添加密钥")}
+            hint={editingProfile ? undefined : t("保存后在 Claude / Codex 页面选择密钥和模型。")}
+            draft={draft}
+            defaultServiceUrl={defaultServiceUrl}
+            setDraft={setDraft}
+            busy={busy}
+            onCancel={() => setDraft(null)}
+            onSave={saveDraft}
+            onDelete={editingProfile ? () => removeProfile(editingProfile) : undefined}
+          />
+        );
+      })()}
+
       {showAdvanced && (
         <div
           className="overlay"
@@ -786,7 +787,7 @@ export default function App() {
             <input type="checkbox" checked={conservative} onChange={(e) => setConservative(e.target.checked)} />
             <span>
               {t("Codex 兼容旧版本")}
-              <span className="dim"> · {t("Codex 仍提示未登录时启用。")}</span>
+              <span className="dim"> · {t("强制使用独立网关配置，不覆盖官方登录。")}</span>
             </span>
           </label>
           {codexKeepsAuth && (
