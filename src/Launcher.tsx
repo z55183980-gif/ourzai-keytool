@@ -519,16 +519,7 @@ export function Launcher(props: {
         {live === value && <span className="service-current">{t("当前生效")}</span>}
         {opts.edit && <button type="button" className="service-edit" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("编辑")}</button>}
       </div>;
-    const where = mode === "cli" ? t("在工作目录打开终端") : t("打开桌面应用");
-    // 选中项就是当前配置（密钥、模型都一样）时，不再显示重复的启动说明。
     const model = selected?.hasKey ? modelOf(tool, selected) : "";
-    const sameModel = config?.currentModel === model && (tool !== "codex" || props.env?.codex.currentReasoningEffort === (selected?.codexEffort || "medium"));
-    const isCurrent = service !== "current" && service === matchedService(tool);
-    const note = service === "current" ? t("不改动配置，{where}", { where })
-      : isCurrent && sameModel ? null
-      : isCurrent ? t("写入新的模型设置后，{where}", { where })
-      : service === "official" ? t("切回官方服务后，{where}", { where })
-      : selected ? t("写入「{name}」的配置后，{where}", { name: selected.name, where }) : t("请先选择可用的服务");
     const issues = health[tool];
     const status: ConsoleStatus = !consented(tool) ? { level: "idle", text: `${meta.name} · ${t("未读取配置")}` }
       : issues === null ? { level: "idle", text: `${meta.name} · ${t("检查中…")}` }
@@ -583,7 +574,8 @@ export function Launcher(props: {
           const ok = await props.onLaunch(tool, mode, service, prefs.projectDirectory);
           if (ok && mode === "cli") await save({ recentDirectories: [prefs.projectDirectory, ...prefs.recentDirectories.filter(p => p !== prefs.projectDirectory)].slice(0,8) });
         }}><UiIcon name={mode === "cli" ? "terminal" : "desktop"}/>{props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) })}</button>
-        {(broken || note) && <span className={`launch-note ${broken || invalidService ? "warn-text" : ""}`}>{broken ? t("配置文件需要修复，见下方输出") : note}</span>}
+        {/* 按钮下不再放说明文案；只在配置文件损坏、无法启动时提示原因 */}
+        {broken && <span className="launch-note warn-text">{t("配置文件需要修复，见下方输出")}</span>}
         {mode === "desktop" && !passthrough && <p className="desktop-hint">{t("桌面应用内已有的登录可能优先生效，启动后请在应用内确认。")}</p>}
         {!installed?.installed && installed && <p className="launch-warning">{t(installed.message)} <button className="site" disabled={disabled} onClick={props.onSettings}>{t("设置程序路径")}</button></p>}
         {!!issues?.length && !checking && <div className="health-cards">
