@@ -1206,6 +1206,14 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
         Ok((result.0, result.1, profile, key))
     }).await?;
 
+    if service == Service::Zai {
+        let selection_issues = health::check_selected_profile(req.tool, profile.as_ref(), selected_key.as_deref());
+        if !selection_issues.is_empty() {
+            issues.extend(selection_issues);
+            return Ok(issues);
+        }
+    }
+
     // 测哪把密钥、对照哪些模型：选了 zAI 密钥就是它和启动时会写入的模型；
     // 沿用当前配置就是配置文件里实际在用的那把（只在指向网关时）。密钥都不经过前端。
     // 选的是其他服务的密钥：配置规则照常查（别名等 zAI 专属的规则只在指向网关时才报），

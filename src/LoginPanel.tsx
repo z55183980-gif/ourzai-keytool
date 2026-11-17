@@ -153,7 +153,7 @@ export function LoginPanel(props: {
 
   const title = t(signedIn ? "选择要导入的密钥" : "登录 zAI 账号");
   const lede = t(signedIn ? "导入后，即可在启动页和密钥页选择使用。"
-    : view === "unavailable" ? "暂时无法在浏览器中登录。可以先手动粘贴 API Key，不登录也能使用全部功能。"
+    : view === "unavailable" ? "浏览器登录不可用，可直接粘贴 API Key。"
     : "支持 Apple、Google 或邮箱验证码；已登录控制台可继续。");
   const alert = error && <p className="cauth-error" role="alert">{error}</p>;
   const spinner = <span className="account-spinner" />;

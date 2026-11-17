@@ -29,6 +29,8 @@ import type {
   DiagnoseRequest,
   Diagnosis,
   ModelInfo,
+  LauncherScan,
+  LaunchTarget,
 } from "./types";
 
 export type Scenario = "configured" | "fresh" | "legacy" | "broken" | "nocodex" | "conflict";
@@ -37,6 +39,33 @@ export function activeScenario(): Scenario | null {
   if (!import.meta.env.DEV) return null;
   const m = new URLSearchParams(location.search).get("mock");
   return m ? (m as Scenario) : null;
+}
+
+// Optional setup preview: ?mock=configured&setup=missing|error|success.
+// A success preview starts missing and becomes installed on the next scan.
+let setupScans = 0;
+export function mockClientGuide(target: LaunchTarget) {
+  const mac = new URLSearchParams(location.search).get("platform") === "macos";
+  const claude = target.startsWith("claude"), cli = target.endsWith("cli");
+  const shell = mac ? "Terminal · zsh / bash" : "PowerShell 5.1 / 7+";
+  const command = cli ? claude
+    ? mac ? "curl -fsSL https://claude.ai/install.sh | bash" : "irm https://claude.ai/install.ps1 | iex"
+    : mac ? "npm install -g @openai/codex@latest" : "npm.cmd install -g @openai/codex@latest" : null;
+  const variants = command ? [{ shell, command }] : [];
+  if (!mac && cli) variants.push({ shell: "CMD", command: claude ? "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd" : "npm install -g @openai/codex@latest" });
+  return { platform: mac ? "macos" : "windows", url: claude ? "https://code.claude.com/docs/en/setup" : "https://github.com/openai/codex", shell, command, variants, canRun: cli, note: "" };
+}
+export async function mockLauncherScan(s: Scenario): Promise<LauncherScan> {
+  const mode = new URLSearchParams(location.search).get("setup");
+  const attempt = ++setupScans;
+  await new Promise(resolve => setTimeout(resolve, 350));
+  if (mode === "error" && attempt > 1) throw new Error("预览：安装检测暂时失败，请重试。");
+  const mac = new URLSearchParams(location.search).get("platform") === "macos";
+  return { platform: mac ? "macos" : "windows", installations: (["claude-desktop", "claude-cli", "codex-desktop", "codex-cli"] as const).map(target => {
+    const installed = mode === "missing" || mode === "error" || (mode === "success" && attempt === 1)
+      ? false : s !== "nocodex" || !target.startsWith("codex");
+    return { target, installed, path: installed ? (mac ? "/Applications/" + target : "C:\\Applications\\" + target + ".exe") : null, message: "界面预览示例" };
+  }) };
 }
 
 const HOME_CODEX = "C:\\Users\\PC\\.codex";
@@ -102,6 +131,7 @@ export function mockMarkConfigRead(tool: ToolId) { if (!configReadTools.includes
 /** 只「读取」同意过的工具，另一个和后端一样返回未读取占位 */
 export function mockEnvFor(s: Scenario, tools?: ToolId[]): Environment {
   const env = mockEnv(s);
+  for (const slot of ["codex", "claude", "claudeDesktop"] as const) Object.assign(env[slot], appliedConfig[slot]);
   const notRead = { homeExists: false, currentBaseUrl: null, currentModel: null, managedByUs: false, activeProfileId: null, unsavedGatewayKey: false, configurationStatus: "unknown" as const, statusMessage: "尚未读取（用户还没同意读取这个工具的配置）" };
   if (tools && !tools.includes("claude")) env.claude = { ...env.claude, ...notRead, settingsState: "missing" as never };
   if (tools && !tools.includes("codex")) env.codex = { ...env.codex, ...notRead, configState: "missing" as never, authState: "Missing", currentReasoningEffort: null, residue: [] };
@@ -331,9 +361,24 @@ export function mockTest(): TestResult {
 
 /** 预览里「修复」过的工具：写入配置后体检不再报可修复的问题；还原备份后恢复原样 */
 const repaired = new Set<ToolId>();
-export function mockRestore() { repaired.clear(); }
+const appliedConfig: Partial<Record<keyof Environment, object>> = {};
+export function mockRestore() { repaired.clear(); for (const slot of ["codex", "claude", "claudeDesktop"] as const) delete appliedConfig[slot]; }
+
+export function mockRevertOfficial(codex: boolean, claude: boolean, claudeDesktop: boolean) {
+  for (const slot of ["codex", "claude", "claudeDesktop"] as const) {
+    if (!({ codex, claude, claudeDesktop })[slot]) continue;
+    appliedConfig[slot] = { configurationStatus: "official", activeProfileId: null, currentModel: null, currentBaseUrl: null, managedByUs: false, unsavedGatewayKey: false };
+  }
+  return "20260918-183012";
+}
 
 export function mockApply(req: ApplyRequest): ApplyResult {
+  for (const slot of ["codex", "claude", "claudeDesktop"] as const) {
+    if (!(slot === "codex" ? req.configureCodex : slot === "claude" ? req.configureClaude : req.configureClaudeDesktop)) continue;
+    appliedConfig[slot] = { configurationStatus: "configured", activeProfileId: req.profileId,
+      currentModel: (slot === "codex" ? req.model : req.claudeModel) || null,
+      currentReasoningEffort: req.reasoningEffort, managedByUs: true, unsavedGatewayKey: false };
+  }
   if (req.configureClaude || req.configureClaudeDesktop) repaired.add("claude");
   if (req.configureCodex) repaired.add("codex");
   return {

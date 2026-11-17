@@ -220,17 +220,17 @@ button.primary:disabled, .launcher-pages button.primary:disabled, .key-actions >
 
 /* Shared pointer feedback for page and dialog actions; the dock has its own motion.
    The interaction rules intentionally override older component hover borders. */
-:is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab) {
+:is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab, .install-inline-action) {
   transition: translate 180ms ease, background-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
 }
 :is(.launcher-app, .account-dialog) button:not(.nav-tab):focus:not(:focus-visible) { outline: none; }
 @media (hover: hover) and (pointer: fine) {
-  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab):hover:not(:disabled) {
+  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab, .install-inline-action):hover:not(:disabled) {
     translate: 0 -1px;
     border-color: transparent !important;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 3px 10px rgba(36,52,80,.07) !important;
   }
-  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab):not(.danger):hover:not(:disabled) {
+  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab, .install-inline-action):not(.danger):hover:not(:disabled) {
     background: var(--button-hover-bg, rgba(255,255,255,.9)) !important;
     filter: none;
   }
@@ -239,7 +239,7 @@ button.primary:disabled, .launcher-pages button.primary:disabled, .key-actions >
     translate: none;
     box-shadow: none !important;
   }
-  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab):active:not(:disabled) {
+  :is(.launcher-app, .account-dialog) button:not(.nav-tab, .launch-mode-tab, .lang-tab, .install-inline-action):active:not(:disabled) {
     translate: none;
     transform: none;
     box-shadow: inset 0 1px 3px rgba(36,52,80,.06) !important;

@@ -65,6 +65,25 @@ pub enum Tool {
     Codex,
 }
 
+/// A stale launcher selection is not a rejected API key. Validate the local
+/// selection before deciding whether a connection check can be skipped.
+pub fn check_selected_profile(tool: Tool, profile: Option<&crate::state::Profile>, key: Option<&str>) -> Vec<Issue> {
+    let Some(profile) = profile else {
+        return vec![issue("S1", Level::Error, "所选密钥记录已不存在，请重新选择服务", Fix::Keys)];
+    };
+    if key.is_none_or(|k| k.trim().is_empty()) {
+        return vec![issue("S2", Level::Error, "所选密钥缺少凭据，请补充密钥或重新选择服务", Fix::Keys)];
+    }
+    let supported = !profile.is_custom() || match tool {
+        Tool::Codex => !profile.codex_base_url.trim().is_empty(),
+        Tool::Claude => !profile.claude_base_url.trim().is_empty(),
+    };
+    if !supported {
+        return vec![issue("S3", Level::Error, "所选密钥未配置此工具的服务地址，请重新选择服务", Fix::Keys)];
+    }
+    Vec::new()
+}
+
 /// 连接测试的结果（`/models`，不计费）
 pub enum Connection {
     /// 连不上或超时
@@ -396,6 +415,34 @@ mod tests {
 
     fn ids(v: &[Issue]) -> Vec<&'static str> {
         v.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn unavailable_selection_is_not_a_successful_key_check() {
+        let profile = crate::state::Profile::default();
+        for tool in [Tool::Codex, Tool::Claude] {
+            for key in [None, Some("fixture-key")] {
+                let issues = check_selected_profile(tool, None, key);
+                assert_eq!(ids(&issues), ["S1"]);
+                assert_eq!(issues[0].level, Level::Error);
+                assert_eq!(issues[0].fix, Fix::Keys);
+            }
+            for key in [None, Some(""), Some("  ")] {
+                assert_eq!(ids(&check_selected_profile(tool, Some(&profile), key)), ["S2"]);
+            }
+            assert!(check_selected_profile(tool, Some(&profile), Some("fixture-key")).is_empty());
+        }
+    }
+
+    #[test]
+    fn selected_custom_profile_requires_the_requested_tools_endpoint() {
+        let mut profile = crate::state::Profile { claude_base_url: "https://example.test".into(), ..Default::default() };
+        assert_eq!(ids(&check_selected_profile(Tool::Codex, Some(&profile), Some("fixture-key"))), ["S3"]);
+        assert!(check_selected_profile(Tool::Claude, Some(&profile), Some("fixture-key")).is_empty());
+        profile.claude_base_url.clear();
+        profile.codex_base_url = "https://example.test/v1".into();
+        assert_eq!(ids(&check_selected_profile(Tool::Claude, Some(&profile), Some("fixture-key"))), ["S3"]);
+        assert!(check_selected_profile(Tool::Codex, Some(&profile), Some("fixture-key")).is_empty());
     }
 
     fn claude(env: &str) -> String {

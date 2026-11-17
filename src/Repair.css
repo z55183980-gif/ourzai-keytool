@@ -16,6 +16,12 @@
   font-size: 12px; color: #3051c3; background: rgba(255, 255, 255, .78) !important; border: 0 !important; border-radius: 9px; box-shadow: none !important;
 }
 .readiness-action .ui-icon { width: 14px; height: 14px; }
+/* Healthy status is one line; override the full card's fixed height here. */
+.readiness-card.status-card.compact-status { --status-h: 32px; min-height: 32px; padding: 0; gap: 8px; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+.compact-status .readiness-icon { width: 18px; height: 18px; background: transparent; border-radius: 0; }
+.compact-status .status-card-body { flex-direction: row; align-items: center; justify-content: flex-start; overflow: visible; }
+.compact-status strong { font-size: 12px; }
+.launcher-pages .compact-status .readiness-action { min-height: 28px; padding: 2px 4px; font-size: 12px; background: transparent !important; --button-hover-bg: transparent; }
 .launcher-pages .repair-dismiss {
   position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
   color: #6b778c; background: transparent !important; border: 0 !important; border-radius: 7px; box-shadow: none !important;

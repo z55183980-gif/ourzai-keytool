@@ -31,3 +31,6 @@ src-tauri/target
 
 # 本机打出的安装包，体积大，发布走 GitHub Releases
 artifacts/
+
+# Python relay test artifacts
+__pycache__/

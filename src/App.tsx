@@ -20,7 +20,7 @@ import { Launcher, PickerDialog, type Page, type ToolAlerts } from "./Launcher";
 import { UiIcon } from "./UiIcon";
 import { MAX_LOG_LINES, clipLogText, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
 import { effortLabel, pickModel } from "./modelFamilies";
-import { launchWithConfiguration } from "./launchFlow";
+import { launchWithConfiguration, saveLaunchConfiguration } from "./launchFlow";
 import { profileServiceUrl, serviceUrlFields } from "./serviceUrl";
 import { getLang, t, useLang } from "./i18n";
 import { UpdateBanner, useUpdates } from "./Updates";
@@ -203,12 +203,12 @@ export default function App() {
    */
   /** 是否已同意读取本机配置（给 reload 用的同步副本） */
   const configReadRef = useRef<Record<ToolId, boolean>>({ claude: false, codex: false });
-  const reload = useCallback(async (url?: string): Promise<Environment | null> => {
+  const reload = useCallback(async (url?: string, preferredProfileId?: string): Promise<Environment | null> => {
     // 只读用户同意过的工具；一个都没同意时不读本机配置，只读本工具自己的数据
     const tools = (["claude", "codex"] as const).filter(x => configReadRef.current[x]);
     try {
       const [e, ps, bs] = await Promise.all([
-        tools.length ? api.scanEnvironment(url, [...tools]) : Promise.resolve(null),
+        tools.length ? api.scanEnvironment(url, [...tools], preferredProfileId) : Promise.resolve(null),
         api.listProfiles(),
         api.listBackups().catch(() => [] as BackupEntry[]),
       ]);
@@ -428,19 +428,19 @@ export default function App() {
     }
   };
 
-  const launch = async (tool: ToolId, mode: LaunchMode, service: string, directory: string): Promise<boolean> => {
+  const runClientAction = async (tool: ToolId, mode: LaunchMode, service: string, directory: string, action: "save" | "launch"): Promise<boolean> => {
     if (launchLock.current || busy) return false;
     launchLock.current = true;
-    setBusy("launch");
+    setBusy(action === "save" ? "apply" : "launch");
     let changed = false;
     try {
       const p = profiles.find(profile => profile.id === service);
       const claudeAliases = p?.custom
         ? { opus: "", sonnet: "", haiku: "" }
         : { opus: aliasOpus, sonnet: aliasSonnet, haiku: aliasHaiku };
-      log("cmd", t("启动 {name}", { name: `${tool === "claude" ? "Claude" : "Codex"} ${mode === "cli" ? "CLI" : t("桌面版")}` }) + ` · ${service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : p?.name ?? t("所选密钥")}`);
+      log("cmd", t(action === "save" ? "保存并写入 {name} 配置" : "启动 {name}", { name: `${tool === "claude" ? "Claude" : "Codex"} ${mode === "cli" ? "CLI" : t("桌面版")}` }) + ` · ${service === "current" ? t("保持现有配置") : service === "official" ? t("官方服务") : p?.name ?? t("所选密钥")}`);
       if (!["current", "official"].includes(service) && !p?.hasKey) throw new Error(t("所选密钥不可用，请重新选择"));
-      const receipt = await launchWithConfiguration(tool, mode, service, directory, {
+      const request = {
         profileId: service,
         baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl,
         wireApi: remote?.wire_api || "responses", ignoreProxy,
@@ -449,17 +449,26 @@ export default function App() {
         cleanupResidue: false, overwriteOfficialAuth: false, conservative: false,
         claudeModel: modelFor("claude", p),
         claudeOpusModel: claudeAliases.opus, claudeSonnetModel: claudeAliases.sonnet, claudeHaikuModel: claudeAliases.haiku,
-      }, api, r => { changed = true; logResult(r); });
-      setToast({ kind: "ok", text: receipt.message });
+      };
+      if (action === "save") {
+        await saveLaunchConfiguration(tool, mode, service, request, api, r => { changed = true; logResult(r); });
+        setToast({ kind: "ok", text: t("配置已保存并写入，可以启动客户端") });
+      } else {
+        const receipt = await launchWithConfiguration(tool, mode, service, directory, request, api);
+        setToast({ kind: "ok", text: receipt.message });
+      }
       return true;
     } catch (e) {
       setToast({ kind: "err", text: t(String(e).replace(/^Error:\s*/, "")) + (changed ? t("（配置已保存，可在上方撤销；尚未确认客户端运行）") : "") });
       return false;
     } finally {
-      await reload(baseUrl);
+      await reload(baseUrl, service);
       setBusy(null); launchLock.current = false;
     }
   };
+
+  const launch = (tool: ToolId, mode: LaunchMode, service: string, directory: string) => runClientAction(tool, mode, service, directory, "launch");
+  const saveConfiguration = (tool: ToolId, mode: LaunchMode, service: string) => runClientAction(tool, mode, service, "", "save");
 
   /**
    * 某把密钥给某个工具用的模型：单独设置过就用它；没设置时用默认模型，
@@ -540,7 +549,7 @@ export default function App() {
         ...patch,
       });
       setProfiles(await api.listProfiles().catch(() => profiles));
-      setToast({ kind: "ok", text: t("模型已保存，启动时写入配置") });
+      setToast({ kind: "ok", text: t("模型选择已保存，请点击密钥右侧的启用按钮写入配置") });
       return true;
     } catch (e) {
       setToast({ kind: "err", text: String(e) });
@@ -613,7 +622,8 @@ export default function App() {
       {/* 导航独占布局区域，只有主内容滚动，短窗口也不会遮挡操作。 */}
       <main className={`workspace-main ${page === "claude" || page === "codex" ? "fill" : ""}`}>
       <Launcher page={page} busy={busy !== null} profiles={profiles} env={env}
-        onLaunch={launch} onKeys={() => setPage("keys")}
+        onLaunch={launch} onSaveConfiguration={saveConfiguration} onKeys={() => setPage("keys")}
+        onEditProfile={profile => { setPage("keys"); startEdit(profile); }}
         onSettings={() => setPage("settings")} onAdvanced={() => setShowAdvanced(true)}
         onRefresh={async () => { await reload(baseUrl); }} checkHealth={checkHealth} onFix={fixHealth} onRestore={restore} diagnose={diagnose} onAlerts={setToolAlerts} onConsole={openSite}
         modelFor={modelFor} catalogKey={Object.keys(catalogs).join()} onSaveModel={saveModel} listModels={listModels}
@@ -661,7 +671,7 @@ export default function App() {
         return (
           <Editor
             title={editingProfile ? t("编辑「{name}」", { name: editingProfile.name }) : t("添加密钥")}
-            hint={editingProfile ? undefined : t("保存后在 Claude / Codex 页面选用，模型也在那里设置")}
+            hint={editingProfile ? undefined : t("保存后在 Claude / Codex 页面选择密钥和模型。")}
             draft={draft}
             defaultServiceUrl={defaultServiceUrl}
             setDraft={setDraft}
@@ -752,7 +762,7 @@ export default function App() {
           <div className="field">
             <label>
               {t("Claude Code 里 haiku / sonnet / opus 分别用哪个模型")}
-              <span className="dim"> · {t("影响后台杂事和快捷切换，留空就不设置")}</span>
+              <span className="dim"> · {t("用于后台任务和模型切换，留空不设置。")}</span>
             </label>
             <input value={aliasHaiku} onChange={(e) => setAliasHaiku(e.target.value)} placeholder="haiku" spellCheck={false} />
             <input value={aliasSonnet} onChange={(e) => setAliasSonnet(e.target.value)} placeholder="sonnet" spellCheck={false} />
@@ -769,7 +779,7 @@ export default function App() {
             <input type="checkbox" checked={conservative} onChange={(e) => setConservative(e.target.checked)} />
             <span>
               {t("Codex 兼容旧版本")}
-              <span className="dim"> · {t("配好后 Codex 还提示没登录时勾这个")}</span>
+              <span className="dim"> · {t("Codex 仍提示未登录时启用。")}</span>
             </span>
           </label>
           {codexKeepsAuth && (
@@ -777,7 +787,7 @@ export default function App() {
               <input type="checkbox" checked={overwriteAuth} disabled={env?.codex.authState === "ExternalStore"} onChange={(e) => setOverwriteAuth(e.target.checked)} />
               <span>
                 {t("写入 Codex 时不保留已有登录")}
-                <span className="dim"> · {env?.codex.authState === "ExternalStore" ? t("Codex 使用独立认证存储，不能勾选") : t("检测到 ChatGPT 本地登录，勾了会退出官方登录")}</span>
+                <span className="dim"> · {env?.codex.authState === "ExternalStore" ? t("Codex 使用独立认证存储，不能勾选") : t("启用后将退出本机 ChatGPT 登录。")}</span>
               </span>
             </label>
           )}

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TrayAction } from "./trayFlow";
 import * as mock from "./mock";
 import type {
@@ -34,15 +34,38 @@ const S = DEV ? mock.activeScenario() : null;
 export const takeTrayAction = (): Promise<TrayAction | null> => DEV && S ? Promise.resolve(null) : invoke("take_tray_action");
 export const validateProjectDirectory = (path: string): Promise<void> => DEV && S ? Promise.resolve() : invoke("validate_project_directory", { path });
 
-export interface ClientGuide { url: string; command: string | null; shell: string; note: string }
+export interface ClientGuide { platform: string; url: string; command: string | null; shell: string; note: string; variants: { shell: string; command: string }[]; canRun: boolean }
 export interface ClientVersion { current: string; latest: string | null; updateAvailable: boolean | null; path: string; warning: string | null }
+export const isSetupPreview = !!(DEV && S);
+export const openSetupTerminal = (): Promise<void> => DEV && S ? Promise.resolve() : invoke("open_setup_terminal");
+export interface InstallProgress { phase: "resolve" | "download" | "relay" | "verify" | "install" | "complete" | "installer"; downloaded: number; total: number | null }
+export interface InstallOutcome { installed: boolean; message: string }
+export const runClientInstall = async (target: import("./types").LaunchTarget, progress: (value: InstallProgress) => void): Promise<InstallOutcome> => {
+  if (DEV && S) {
+    for (const phase of ["resolve", "download", "relay", "verify"] as const) {
+      progress({ phase, downloaded: phase === "relay" ? 1048576 : 0, total: phase === "relay" ? 2097152 : null });
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+    return { installed: false, message: "预览模式：已模拟下载安装，未执行真实安装。" };
+  }
+  const onProgress = new Channel<InstallProgress>(); onProgress.onmessage = progress;
+  return invoke("install_client", { target, onProgress });
+};
 export const clientInstallGuide = (target: import("./types").LaunchTarget): Promise<ClientGuide> => DEV && S
-  ? Promise.resolve({ url: target.startsWith("claude") ? "https://code.claude.com/docs/en/setup" : "https://github.com/openai/codex", command: target.endsWith("cli") ? (target.startsWith("claude") ? "irm https://claude.ai/install.ps1 | iex" : "npm install -g @openai/codex@latest") : null, shell: "PowerShell", note: "安装完成后重新检测；若仍未找到，请重启本工具或设置程序路径。" })
+  ? Promise.resolve(mock.mockClientGuide(target))
   : invoke("client_install_guide", { target });
 export const openClientDownload = (target: import("./types").LaunchTarget): Promise<void> => DEV && S ? Promise.resolve() : invoke("open_client_download", { target });
-export const checkClientVersion = (target: import("./types").LaunchTarget, ignoreProxy: boolean): Promise<ClientVersion> => DEV && S
-  ? Promise.resolve({ current: "0.99.0", latest: "0.100.0", updateAvailable: true, path: "C:\\Applications\\" + target, warning: null })
-  : invoke("check_client_version", { target, ignoreProxy });
+export const checkClientVersion = async (target: import("./types").LaunchTarget, ignoreProxy: boolean, checkLatest = true): Promise<ClientVersion> => {
+  if (DEV && S) {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    const state = new URLSearchParams(location.search).get("update") ?? "current";
+    const current = target.endsWith("cli") ? "0.169.0" : "26.1111.2228.0";
+    return { current, latest: !checkLatest || state === "error" ? null : state === "available" ? (target.endsWith("cli") ? "0.170.0" : "26.1112.2228.0") : current,
+      updateAvailable: !checkLatest || state === "error" ? null : state === "available", path: target,
+      warning: state === "error" && checkLatest ? "更新检查失败，当前显示本机版本。" : null };
+  }
+  return invoke("check_client_version", { target, ignoreProxy, checkLatest });
+};
 
 export const loadLauncherPreferences = (): Promise<LauncherPreferences> => DEV && S
   ? Promise.resolve({ projectDirectory: "C:\\Projects", recentDirectories: [], claudeMode: "cli", codexMode: "cli", claudeService: "current", codexService: "current", customPaths: {} })
@@ -50,7 +73,7 @@ export const loadLauncherPreferences = (): Promise<LauncherPreferences> => DEV &
 export const saveLauncherPreferences = (preferences: LauncherPreferences): Promise<void> => DEV && S
   ? Promise.resolve() : invoke("save_launcher_preferences", { preferences });
 export const scanLaunchers = (): Promise<LauncherScan> => DEV && S
-  ? Promise.resolve({ platform: "windows", installations: (["claude-desktop", "claude-cli", "codex-desktop", "codex-cli"] as const).map(target => ({ target, installed: S !== "nocodex" || !target.startsWith("codex"), path: "C:\\Applications\\" + target + ".exe", message: "界面预览示例" })) })
+  ? mock.mockLauncherScan(S)
   : invoke("scan_launchers");
 export const validateLaunch = (req: LaunchRequest): Promise<void> => DEV && S ? Promise.resolve() : invoke("validate_launch", { req });
 export const launchClient = (req: LaunchRequest): Promise<{ message: string }> => DEV && S
@@ -170,5 +193,5 @@ export const rebuildMinimalConfig = (req: ApplyRequest): Promise<ApplyResult> =>
 
 export const revertToOfficial = (codex: boolean, claude: boolean, claudeDesktop = false): Promise<string> =>
   DEV && S
-    ? Promise.resolve("20260918-183012")
+    ? Promise.resolve(mock.mockRevertOfficial(codex, claude, claudeDesktop))
     : invoke<string>("revert_to_official", { codex, claude, claudeDesktop });

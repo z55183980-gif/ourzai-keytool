@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { runTrayAction, TrayConsumer } from "./trayFlow";
+import { configurationMatches } from "./launchFlow";
 import * as mock from "./mock";
 import { ClientSetup } from "./ClientSetup";
+import { ClientInstallStatus } from "./ClientInstallStatus";
+import { ClientVersionCache } from "./clientVersionCache";
 import * as api from "./api";
 import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import { UiIcon } from "./UiIcon";
@@ -31,10 +34,13 @@ export function PickerDialog(props: { title: string; onClose: () => void; footer
   closeRef.current = onClose;
   // 只在打开时设一次焦点
   useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     (ref.current?.querySelector<HTMLElement>('.picker-body [data-autofocus]:not(:disabled)')
       ?? ref.current?.querySelector<HTMLElement>('.picker-body [aria-checked="true"]:not(:disabled)')
       ?? ref.current?.querySelector<HTMLElement>('.picker-body input:not(:disabled)')
-      ?? ref.current?.querySelector<HTMLElement>('.picker-body button:not(:disabled)'))?.focus();
+      ?? ref.current?.querySelector<HTMLElement>('.picker-body button:not(:disabled)')
+      ?? ref.current)?.focus();
+    return () => { if (opener?.isConnected) opener.focus(); };
   }, []);
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -42,7 +48,16 @@ export function PickerDialog(props: { title: string; onClose: () => void; footer
     const previousMainOverflow = main?.style.overflow;
     document.body.style.overflow = "hidden";
     if (main) main.style.overflow = "hidden";
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeRef.current(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); closeRef.current(); }
+      if (e.key !== "Tab") return;
+      const items = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary, [tabindex="0"]') ?? [])
+        .filter(el => el.getClientRects().length > 0);
+      const first = items[0], last = items[items.length - 1];
+      if (!first) { e.preventDefault(); ref.current?.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || !ref.current?.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !ref.current?.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
@@ -51,7 +66,7 @@ export function PickerDialog(props: { title: string; onClose: () => void; footer
     };
   }, []);
   return <div className="overlay picker-overlay" onMouseDown={e => { if (!props.keepOnOverlay && e.target === e.currentTarget) onClose(); }}>
-    <div className={`picker-sheet ${props.className ?? ""}`} role="dialog" aria-modal="true" aria-label={props.title} ref={ref}>
+    <div className={`picker-sheet ${props.className ?? ""}`} role="dialog" aria-modal="true" aria-label={props.title} ref={ref} tabIndex={-1}>
       <div className="picker-hd"><strong>{props.title}</strong><button type="button" className="icon-round" aria-label={t("关闭")} onClick={onClose}><UiIcon name="close"/></button></div>
       <div className="picker-body">{props.children}</div>
       {props.footer && <div className="picker-ft">{props.footer}</div>}
@@ -81,6 +96,8 @@ export function Launcher(props: {
   profiles: Profile[];
   env: Environment | null;
   onLaunch: (tool: ToolId, mode: LaunchMode, service: string, directory: string) => Promise<boolean>;
+  onSaveConfiguration: (tool: ToolId, mode: LaunchMode, service: string) => Promise<boolean>;
+  onEditProfile: (profile: Profile) => void;
   onKeys: (tool?: ToolId) => void;
   onSettings: () => void;
   onAdvanced: () => void;
@@ -130,6 +147,8 @@ export function Launcher(props: {
   const [saving, setSaving] = useState(false);
   const [pathDrafts, setPathDrafts] = useState<Partial<Record<LaunchTarget, string>>>({});
   const savingRef = useRef(false);
+  const activatingRef = useRef(false);
+  const [activating, setActivating] = useState(false);
   /** 两个工具的体检结果。null = 检查中，undefined = 体检本身出错 */
   const [health, setHealth] = useState<Record<ToolId, HealthIssue[] | null | undefined>>({ claude: null, codex: null });
   /** 当前打开的选择弹窗：服务或工作目录。卡片里平时都只显示一行 */
@@ -140,7 +159,7 @@ export function Launcher(props: {
     const list = serviceListRef.current;
     if (!list) return;
     list.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    (list.querySelector<HTMLElement>('[aria-checked="true"]:not(:disabled)') ?? list.querySelector<HTMLElement>('[role="radio"]:not(:disabled)'))?.focus({ preventScroll: true });
+    (list.querySelector<HTMLElement>('.is-current .service-enable:not(:disabled)') ?? list.querySelector<HTMLElement>('.service-enable:not(:disabled)'))?.focus({ preventScroll: true });
   });
   /** 「更换模型」弹窗里正在编辑的值 */
   const [modelEdit, setModelEdit] = useState<{ model: string; effort: string }>({ model: "", effort: "medium" });
@@ -149,6 +168,7 @@ export function Launcher(props: {
   /** 设置页：正在修改哪个程序的路径（弹窗） */
   const [pathEdit, setPathEdit] = useState<LaunchTarget | null>(null);
   const [setupTarget, setSetupTarget] = useState<LaunchTarget | null>(null);
+  const clientVersions = useRef(new ClientVersionCache()).current;
   const [trayWorking, setTrayWorking] = useState(false);
   /** 会覆盖配置文件的环境变量（只有变量名）；null = 还没读到 */
   const [overrides, setOverrides] = useState<string[] | null>(null);
@@ -167,9 +187,9 @@ export function Launcher(props: {
   const pageRef = useRef(props.page);
   pageRef.current = props.page;
   const refresh = useCallback(async () => {
-    setRefreshing(true);
+    setRefreshing(true); setError(null);
     try { const s = await api.scanLaunchers(); setScan(s); return s; }
-    catch (e) { setScan(null); setError(String(e)); return null; }
+    catch (e) { setError(String(e)); return null; }
     finally { setRefreshing(false); }
   }, []);
   useEffect(() => {
@@ -198,14 +218,6 @@ export function Launcher(props: {
     setEnvReportWanted(true);
   }, [readTools.join(), refresh]);
 
-  /** 当前配置对得上列表里的哪一项：某把 zAI 密钥或官方服务；对不上（自定义、待确认、损坏、未配置）返回 null */
-  const matchedService = (tool: ToolId): string | null => {
-    const config = cfg(tool);
-    if (!config) return null;
-    if (config.configurationStatus === "official") return "official";
-    if (config.configurationStatus === "configured") return props.profiles.find(p => p.id === config.activeProfileId && p.hasKey)?.id ?? null;
-    return null;
-  };
   /** Keep the user's launch policy separate from the detected configuration. */
   const serviceFor = (tool: ToolId): string => {
     const saved = prefs?.[`${tool}Service`] ?? "current";
@@ -223,10 +235,10 @@ export function Launcher(props: {
     for (const tool of TOOL_IDS.filter(consented)) {
       props.checkHealth(tool, tool === "claude" ? claudeService : codexService, modeOf(tool))
         .then(r => { if (!cancelled) setHealth(h => ({ ...h, [tool]: r })); })
-        .catch(() => { if (!cancelled) setHealth(h => ({ ...h, [tool]: h[tool] ?? undefined })); });
+        .catch(() => { if (!cancelled) setHealth(h => ({ ...h, [tool]: undefined })); });
     }
     return () => { cancelled = true; };
-  }, [!!prefs, readTools.join(), claudeService, codexService, desktopClaude, props.env, props.catalogKey]);
+  }, [!!prefs, readTools.join(), claudeService, codexService, desktopClaude, props.env, props.profiles, props.catalogKey]);
   const { onAlerts } = props;
   useEffect(() => {
     const level = (issues: HealthIssue[] | null | undefined) =>
@@ -249,14 +261,15 @@ export function Launcher(props: {
       if (typeof selected === "string") await save({ projectDirectory: selected, recentDirectories: [selected, ...(prefsRef.current?.recentDirectories ?? []).filter(p => p !== selected)].slice(0, 8) });
     } catch (e) { setError(String(e)); }
   }
-  async function chooseProgram(target: LaunchTarget) {
+  async function chooseProgram(target: LaunchTarget): Promise<LauncherScan | null | undefined> {
     try {
       const selected = await open({ multiple: false, directory: scan?.platform === "macos" && target.endsWith("desktop"), title: t("选择 {name} 程序", { name: targetName(target) }) });
       if (typeof selected === "string") {
         setPathDrafts(p => ({ ...p, [target]: selected }));
-        if (await save({ customPaths: { ...prefsRef.current?.customPaths, [target]: selected } })) await refresh();
+        if (await save({ customPaths: { ...prefsRef.current?.customPaths, [target]: selected } })) return await refresh();
+        return null;
       }
-    } catch (e) { setError(String(e)); }
+    } catch (e) { setError(String(e)); return null; }
   }
   async function savePath(target: LaunchTarget, value: string) {
     if (await save({ customPaths: { ...prefsRef.current?.customPaths, [target]: value.trim() } })) {
@@ -269,7 +282,7 @@ export function Launcher(props: {
     pendingAfterPage.current = null;
     run?.();
   }, [props.page]);
-  const disabled = props.busy || saving || refreshing || trayWorking || !prefs || updates.state.phase !== "idle";
+  const disabled = props.busy || saving || activating || refreshing || trayWorking || !prefs || updates.state.phase !== "idle";
   const recent = prefs ? prefs.recentDirectories.filter(p => p !== prefs.projectDirectory) : [];
 
   /** 某把密钥给某个工具用的模型；没单独设置就是默认模型 */
@@ -625,7 +638,7 @@ export function Launcher(props: {
     const installed = scan?.installations.find(i => i.target === target);
     const config = cfg(tool);
     const invalidService = !["current", "official"].includes(service) && !props.profiles.some(p => p.id === service && p.hasKey && supportsTool(p, tool));
-    // 桌面版 +「保持现有配置」只是打开程序，不读不写；其余组合都要经过配置检查与写入（已是当前配置时会跳过写入）
+    // 桌面版 +「保持现有配置」直接打开；其余启动先确认配置已保存，不再隐式写入。
     const passthrough = mode === "desktop" && service === "current";
     const broken = !passthrough && config?.configurationStatus === "broken";
     const { selected, aiProfile } = ctxFor(tool);
@@ -639,21 +652,36 @@ export function Launcher(props: {
         unknown: "识别不出现在用的服务，启动后请在应用内确认", broken: "配置文件损坏，需要先修复",
       } as const)[config.configurationStatus as Exclude<typeof config.configurationStatus, "configured">]);
     // 列表里哪一项是配置文件里正在生效的：给它挂「当前生效」
-    const live = matchedService(tool);
-    const pick = (value: string) => { if (value !== service) void save({ [`${tool}Service`]: value }); };
+    const live = config?.configurationStatus === "official" ? "official"
+      : config?.configurationStatus === "configured" ? props.profiles.find(p => p.id === config.activeProfileId && p.hasKey && supportsTool(p, tool))?.id : null;
+    // Explicit row action writes this service only; launching remains a separate action.
+    const activateService = async (value: string) => {
+      if (!prefs || savingRef.current || activatingRef.current || props.busy) return;
+      activatingRef.current = true; setActivating(true);
+      try {
+        if (value !== service && !await save({ [`${tool}Service`]: value })) return;
+        setRepair(tool, null);
+        await props.onSaveConfiguration(tool, mode, value);
+      } finally { activatingRef.current = false; setActivating(false); }
+    };
     const metaLine = (parts: (string | null | undefined)[], monoFirst?: boolean) => <small className="service-meta">{parts.filter(Boolean).map((part, i) => <span key={i} className={monoFirst && i === 0 ? "mono" : undefined} title={part!}>{part}</span>)}</small>;
-    // 服务列表里的一行：左边整块是单选，右边是「当前生效」标记和可选的「编辑」
+    // 左侧仅展示信息；配置变更通过右侧操作执行。
     const option = (value: string, icon: React.ReactNode, title: string, parts: (string | null | undefined)[], opts: { off?: boolean; monoFirst?: boolean; bad?: boolean; edit?: boolean } = {}) =>
-      <div key={value} className={`service-row ${service === value ? "is-picked" : ""} ${opts.bad ? "bad" : ""}`}>
-        <button type="button" role="radio" aria-checked={service === value} className="service-pick" disabled={disabled || opts.off} onClick={() => pick(value)}>
-          <span className="service-radio" aria-hidden="true"/>
+      <div key={value} role="listitem" className={`service-row ${live === value ? "is-current" : ""} ${opts.bad ? "bad" : ""}`}>
+        <div className={`service-info ${opts.off ? "is-unavailable" : ""}`}>
           <span className="service-icon" aria-hidden="true">{icon}</span>
           <span className="service-text"><strong>{title}</strong>{metaLine(parts, opts.monoFirst)}</span>
-        </button>
+        </div>
+        {value === "current" && service !== "current" && <button type="button" className="service-enable" disabled={disabled} onClick={() => void save({ [`${tool}Service`]: "current" })}>{t("沿用")}</button>}
         {live === value && <span className="service-current">{t("当前生效")}</span>}
-        {opts.edit && <button type="button" className="service-edit" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("编辑")}</button>}
+        {(opts.edit || value === "official") && <div className="service-actions">
+          {opts.edit && <button type="button" className="service-edit" disabled={disabled} onClick={() => { const profile = props.profiles.find(p => p.id === value); if (profile) props.onEditProfile(profile); }}>{t("编辑")}</button>}
+          <button type="button" className={`service-enable ${value === "official" ? "" : "primary"}`} disabled={disabled || opts.off || !!broken} onClick={() => void activateService(value)}
+            title={t("写入配置，不启动应用")}>{t(value === "official" ? "换回官方" : "启用")}</button>
+        </div>}
       </div>;
     const model = selected?.hasKey ? modelOf(tool, selected) : "";
+    const needsSave = !invalidService && !configurationMatches(tool, mode, service, props.env, model, selected?.codexEffort || "medium");
     const issues = health[tool];
     const checking = streaming || refreshing || !scan || issues === null;
     const errors = issues?.filter(i => i.level === "error") ?? [];
@@ -664,7 +692,7 @@ export function Launcher(props: {
     const blocker = errors.find(i => i.fix === "keys" || i.fix === "settings" || i.fix === "model");
     const blockerAction = blocker ? fixAction(tool, blocker.fix) : null;
     const missing = !!installed && !installed.installed;
-    const launchDisabled = disabled || !installed?.installed || !!broken || invalidService || !props.env && !passthrough;
+    const launchDisabled = disabled || needsSave || !installed?.installed || !!broken || invalidService || !props.env && !passthrough;
     const launchNow = async () => {
       if (!prefs || savingRef.current) return;
       setRepair(tool, null);
@@ -676,10 +704,11 @@ export function Launcher(props: {
     // 主按钮只有一个，随状态变：没装 → 安装；要你处理的错误 → 对应动作；能修的错误 → 一键修复；其余 → 启动
     type Main = { label: string; icon: "terminal" | "desktop" | "sparkle" | "key" | "settings" | "external"; run: () => void; kind: "primary" | "repair"; off?: boolean; title?: string };
     const main: Main = missing ? { label: t("安装 {name}", { name: targetName(target) }), icon: "external", kind: "primary", run: () => setSetupTarget(target) }
+      : invalidService ? { label: t("重新选择服务"), icon: "key", kind: "primary", run: focusServices, off: disabled }
       : blockerAction && blocker ? { label: blocker.id === "K1" ? t("换一把密钥") : blockerAction.label, icon: blocker.fix === "settings" ? "settings" : "key", kind: "primary", run: blockerAction.run, off: disabled }
       : errors.length && canRepair(errors) ? { label: t("一键修复"), icon: "sparkle", kind: "repair", run: () => void startRepair(tool), off: disabled }
-      : { label: props.busy ? t("处理中…") : t("启动 {name}", { name: targetName(target) }), icon: mode === "cli" ? "terminal" : "desktop", kind: "primary", run: () => void launchNow(), off: launchDisabled, title: undefined };
-    const launchIsMain = !missing && !blocker && !(errors.length && canRepair(errors));
+      : { label: t("启动 {name}", { name: targetName(target) }), icon: mode === "cli" ? "terminal" : "desktop", kind: "primary", run: () => void launchNow(), off: launchDisabled, title: needsSave ? t("请先点击所选服务右侧的启用按钮") : undefined };
+    const launchIsMain = !missing && !invalidService && !needsSave && !blocker && !(errors.length && canRepair(errors));
     const secondary: LogAction | null = missing ? { label: t("已安装？设置程序路径"), run: props.onSettings }
       : blocker?.id === "K1" ? { label: t("去控制台 ↗"), run: props.onConsole }
       : !launchIsMain && !launchDisabled ? { label: t("仍然启动"), run: () => void launchNow() }
@@ -704,10 +733,14 @@ export function Launcher(props: {
         {r.backupId && <button type="button" className="readiness-action" disabled={disabled} onClick={() => void undoRepair(tool, r.backupId!)}>{t("撤销")}</button>}
         <button type="button" className="repair-dismiss" aria-label={t("关闭")} title={t("关闭")} onClick={() => setRepair(tool, null)}><UiIcon name="close"/></button>
       </div>;
+      if (invalidService) return <div className="readiness-card status-card warn" role="status"><span className="readiness-icon"><UiIcon name="alert"/></span>
+        <div className="status-card-body"><strong>{t("所选密钥不可用")}</strong><p>{t("本工具保存的选择已不可用，不代表客户端当前 API Key 失效。可切换为保持现有配置。")}</p></div></div>;
+      if (needsSave && !broken) return <div className="readiness-card status-card warn" role="status"><span className="readiness-icon"><UiIcon name="settings"/></span>
+        <div className="status-card-body"><strong>{t("所选服务尚未启用")}</strong><p>{t("在服务右侧点击启用或换回官方，写入后再启动")}</p></div></div>;
       if (checking) return <div className="readiness-card status-card" role="status"><span className="readiness-icon is-spinning"><UiIcon name="refresh"/></span><div className="status-card-body"><strong>{t("正在检查…")}</strong></div></div>;
       if (issues === undefined) return <div className="readiness-card status-card warn"><span className="readiness-icon"><UiIcon name="alert"/></span>
         <div className="status-card-body"><strong>{t("暂时无法检查")}</strong></div>{recheckBtn}</div>;
-      if (!issues.length) return <div className="readiness-card status-card ok"><span className="readiness-icon"><UiIcon name="check"/></span>
+      if (!issues.length) return <div className="readiness-card status-card ok compact-status"><span className="readiness-icon"><UiIcon name="check"/></span>
         <div className="status-card-body"><strong>{t("一切正常")}</strong></div>{recheckBtn}</div>;
       return <div className={`readiness-card status-card ${errors.length ? "error" : "warn"}`}>
         <span className="readiness-icon"><UiIcon name="alert"/></span>
@@ -739,7 +772,10 @@ export function Launcher(props: {
       <section className={`tool-hero ${!consented(tool) ? "is-gated" : ""}`} aria-label={t("{tool} 启动", { tool: meta.name })}>
         <div className="tool-hero-head">
           <span className={`launch-brand ${tool}`}><meta.Icon className={`brand brand-${tool}`} /></span>
-          <div className="launch-title"><h1>{meta.name}</h1><span className={`install-state ${installed?.installed ? "found" : ""}`}>{installed ? installed.installed ? t("已安装") : t("未检测到") : t("待检测")}</span></div>
+          <div className="launch-title"><h1>{meta.name}</h1>
+            <ClientInstallStatus key={target} cache={clientVersions} target={target} installation={installed} disabled={disabled || repairing}
+              scanning={refreshing} managerOpen={setupTarget === target} onOpen={() => setSetupTarget(target)} />
+          </div>
         </div>
 
         <div className="launch-modes" role="group" aria-label={t("{tool} 启动方式", { tool: meta.name })}>
@@ -767,7 +803,7 @@ export function Launcher(props: {
           <span className="config-label">{t("使用服务")}</span>
           <button type="button" className="site service-manage" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("管理密钥 →")}</button>
         </div>
-        <div className="service-list inline" role="radiogroup" aria-label={t("{tool} 使用服务", { tool: meta.name })} ref={serviceListRef}>
+        <div className="service-list inline" role="list" aria-label={t("{tool} 使用服务", { tool: meta.name })} ref={serviceListRef}>
           {option("current", <UiIcon name="settings"/>, t("沿用现有配置"), [currentText, config?.currentModel], { bad: config?.configurationStatus === "broken" })}
           {option("official", <meta.Icon className={`brand brand-${tool}`}/>, t("官方服务"), [t("使用你自己的官方账号登录")])}
           {props.profiles.map(p => option(p.id, <UiIcon name="key"/>, profileTitle(p),
@@ -775,7 +811,7 @@ export function Launcher(props: {
               : !supportsTool(p, tool) ? [t("没有填 {tool} 地址", { tool: meta.cli })]
               : [p.maskedKey, modelOf(tool, p) || (p.custom ? t("客户端默认模型") : "")],
             { off: !p.hasKey || !supportsTool(p, tool), monoFirst: p.hasKey && supportsTool(p, tool), edit: true }))}
-          {invalidService && option(service, <UiIcon name="key"/>, t("所选密钥已失效"), [t("请重新选择一项")], { off: true, bad: true })}
+          {invalidService && !selected && option(service, <UiIcon name="key"/>, t("所选密钥不可用"), [t("请重新选择一项")], { off: true, bad: true })}
         </div>
 
         {/* 模型：只在选了 zAI 密钥时出现（官方服务、保持现有配置都不由这里写模型） */}
@@ -819,7 +855,7 @@ export function Launcher(props: {
             const ok = await props.onSaveModel(selected.id, tool === "codex" ? { codexModel: value, codexEffort: modelEdit.effort } : { claudeModel: value });
             if (ok) setPicker(null);
           }}>{t("保存")}</button>}>
-          <p className="settings-note">{t("用「{name}」启动 {tool} 时使用。可以直接填写，也可以从下面选。", { name: selected.name, tool: meta.name })}</p>
+          <p className="settings-note">{t("为「{name}」选择或填写 {tool} 模型。", { name: selected.name, tool: meta.name })}</p>
           <label className="sr-only" htmlFor="model-input">{t("模型名")}</label>
           <input id="model-input" className="path-input mono" value={modelEdit.model} placeholder={t("填写模型名")} spellCheck={false} autoComplete="off" disabled={disabled}
             onChange={e => setModelEdit(m => ({ ...m, model: e.target.value }))}/>
@@ -828,9 +864,9 @@ export function Launcher(props: {
               {EFFORTS.map(x => <option key={x.value} value={x.value}>{t(x.label)}</option>)}
             </select></label>}
           <div className="model-list" role="radiogroup" aria-label={t("「{name}」可用的模型", { name: selected.name })}>
-            {!list?.models ? <p className="settings-note">{t("正在获取这把密钥可用的模型…")}</p>
-              : list.error ? <p className="settings-note warn-text">{t("获取可用模型失败：{error}。仍可直接填写模型名。", { error: list.error })}</p>
-              : !groups.length ? <p className="settings-note">{t("没有获取到可用模型，可直接填写模型名。")}</p>
+            {!list?.models ? <p className="settings-note">{t("正在加载可用模型…")}</p>
+              : list.error ? <p className="settings-note warn-text">{t("模型加载失败：{error}。可手动填写。", { error: list.error })}</p>
+              : !groups.length ? <p className="settings-note">{t("暂无模型，请手动填写。")}</p>
               : groups.map(g => <div className="model-group" key={g.name}>
                 <div className="model-group-label">{t(g.name)}</div>
                 {g.items.map(m => <button key={m} type="button" role="radio" aria-checked={m === value} className="model-option mono" disabled={disabled || !fits(m)}
@@ -847,7 +883,7 @@ export function Launcher(props: {
     {(props.page === "claude" || props.page === "codex") && <>
       {/* 还没有密钥：登录导入为主（还能同步密钥状态），手动粘贴为辅（不登录也能用全部功能） */}
       {consented(props.page) && props.profiles.length === 0 && !TOOL_IDS.some(adoptable) && <div className="onboard"><span className="onboard-mark"><UiIcon name="key"/></span>
-        <div><strong>{t("先添加一把密钥")}</strong><span>{t("登录 zAI 账号一键导入，并同步控制台里的密钥状态；也可以粘贴 zAI 或其他服务的 API Key，不登录也能用。")}</span></div>
+        <div><strong>{t("先添加一把密钥")}</strong><span>{t("登录导入 zAI 密钥，或直接粘贴任意服务的 API Key。")}</span></div>
         <button className="primary with-icon" disabled={disabled} onClick={props.onLoginImport}>{t("登录导入")}<UiIcon name="arrow"/></button>
         <button className="ghost" disabled={disabled} onClick={props.onManualKey}>{t("手动粘贴 Key")}</button>
         </div>}
@@ -869,8 +905,13 @@ export function Launcher(props: {
         {TARGETS.map(target => {
           const installation = scan?.installations.find(i => i.target === target);
           const custom = !!prefs?.customPaths[target];
+          const tool = target.startsWith("claude-") ? "claude" : "codex";
+          const Icon = TOOLS[tool].Icon;
           return <div className="setting-row" key={target}>
-            <span className={`setting-dot ${installation ? installation.installed ? "found" : "missing" : ""}`} aria-hidden="true"/>
+            <span className={`setting-brand ${tool}`} aria-hidden="true">
+              <Icon className={`brand brand-${tool}`} />
+              <span className={`setting-dot ${installation ? installation.installed ? "found" : "missing" : ""}`} />
+            </span>
             <div className="setting-text">
               <strong>{targetName(target)}</strong>
               <span className="setting-sub" title={installation?.path || (installation && t(installation.message))}>{!installation ? (refreshing ? t("检测中…") : t("待检测")) : installation.installed ? installation.path || t("已检测到") : t("未检测到")}{custom ? ` · ${t("手动指定")}` : ""}</span>
@@ -885,7 +926,7 @@ export function Launcher(props: {
       <section className="settings-card">
         {/* 只重新读取已经同意过的工具；一个都没读过时先去工具页读 */}
         <button type="button" className="setting-row setting-link" onClick={() => void readLocalConfig(readTools)} disabled={streaming || props.busy || !readTools.length}>
-          <div className="setting-text"><strong>{streaming ? t("读取中…") : t("重新读取本机配置")}</strong><span className="setting-sub">{readTools.length ? t("安装位置、配置文件和环境变量，过程记录在下方诊断日志里") : t("还没有读取过，请先到 Claude 或 Codex 页面读取")}</span></div>
+          <div className="setting-text"><strong>{streaming ? t("读取中…") : t("重新读取本机配置")}</strong><span className="setting-sub">{readTools.length ? t("读取安装、配置和环境变量，详情见诊断日志。") : t("还没有读取过，请先到 Claude 或 Codex 页面读取")}</span></div>
           <span className="setting-chevron" aria-hidden="true"/>
         </button>
         <button type="button" className="setting-row setting-link" onClick={props.onAdvanced} disabled={props.busy}>
@@ -912,8 +953,8 @@ export function Launcher(props: {
         </div>
       </PickerDialog>}
     </div>}
-    {setupTarget && <PickerDialog title={t("{name} 安装与更新", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
-      <ClientSetup key={setupTarget} target={setupTarget} installed={!!scan?.installations.find(i => i.target === setupTarget)?.installed} refresh={refresh} disabled={disabled} />
+    {setupTarget && <PickerDialog title={t(scan?.installations.find(i => i.target === setupTarget)?.installed ? "管理 {name}" : "安装 {name}", { name: targetName(setupTarget) })} onClose={() => setSetupTarget(null)}>
+      <ClientSetup key={setupTarget} onVersion={value => clientVersions.set(setupTarget, scan?.installations.find(i => i.target === setupTarget)?.path, value)} target={setupTarget} installation={scan?.installations.find(i => i.target === setupTarget)} refresh={refresh} chooseProgram={() => chooseProgram(setupTarget)} onInstalled={async () => { const p = await api.loadLauncherPreferences(); prefsRef.current = p; setPrefs(p); setPathDrafts(p.customPaths); }} onDone={() => setSetupTarget(null)} disabled={disabled} />
     </PickerDialog>}
     {error ? <div className="toast err" role="alert">{t(error)}</div>
       : flash && (props.page === "claude" || props.page === "codex") && <div className={`toast ${flash.kind} flash`} role={flash.kind === "err" ? "alert" : "status"} onClick={() => setFlash(null)}>{flash.text}</div>}

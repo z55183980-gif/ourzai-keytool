@@ -63,7 +63,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       <section className="update-gate" aria-labelledby="update-title">
         <div className="update-language">{LANGS.map(lang => <button key={lang.id} onClick={() => setLang(lang.id)}>{lang.label}</button>)}</div>
         <h1 id="update-title">{t(state.policy?.required ? "需要更新才能继续" : state.error ? "无法检查版本" : "正在检查版本…")}</h1>
-        {state.policy?.required && <p>{t("当前版本 {current}，最低需要 {minimum}。更新后即可继续使用。", { current: state.policy.currentVersion, minimum: state.policy.config.min_client_version })}</p>}
+        {state.policy?.required && <p>{t("当前 {current}，请更新至 {minimum} 或更高版本。", { current: state.policy.currentVersion, minimum: state.policy.config.min_client_version })}</p>}
         <UpdatePanel mandatory />
       </section>
     </main> : children}
@@ -89,9 +89,9 @@ export function UpdatePanel({ mandatory = false }: { mandatory?: boolean }) {
     {state.update && <>
       <strong>{t("发现新版本 {version}", { version: state.update.version })}</strong>
       {state.update.notes && <pre className="update-notes">{state.update.notes}</pre>}
-      {/Win/i.test(navigator.platform) && <p className="update-version">{t("Windows 便携版更新后将使用安装版。")}</p>}
+      {/Win/i.test(navigator.platform) && <p className="update-version">{t("便携版更新后将转为安装版。")}</p>}
     </>}
-    {!state.update && state.checked && !state.checking && !state.error && <p>{t(mandatory ? "暂未找到符合要求的更新包，请稍后重试或前往下载页面。" : "已是最新版本")}</p>}
+    {!state.update && state.checked && !state.checking && !state.error && <p>{t(mandatory ? "暂无可用更新，请重试或手动下载。" : "已是最新版本")}</p>}
     {state.policy?.warning && <p className="update-warning">{t(state.policy.warning)}</p>}
     {(state.error || linkError) && <p className="update-error" role="alert">{t(state.error || linkError)}</p>}
     {active && <div role="status" aria-live="polite">

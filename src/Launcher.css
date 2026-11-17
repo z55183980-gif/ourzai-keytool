@@ -335,6 +335,10 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 .setting-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: #c3c9d6; }
 .setting-dot.found { background: #23a36f; box-shadow: 0 0 0 3px rgba(35, 163, 111, .16); }
 .setting-dot.missing { background: #e9a23b; box-shadow: 0 0 0 3px rgba(233, 162, 59, .16); }
+.setting-brand { position: relative; display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 11px; background: var(--glass-strong); box-shadow: inset 0 1px 0 #fff, 0 1px 4px rgba(36, 52, 110, .07); }
+.setting-brand.claude { background: linear-gradient(180deg, #fff3ec, #fbe3d6); }
+.setting-brand .brand { width: 23px; height: 23px; }
+.setting-brand .setting-dot { position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border: 2px solid #f6f9ff; box-shadow: none; }
 .setting-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .setting-text strong { font-size: 14px; font-weight: 600; }
 .setting-sub { font-size: 12px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -398,6 +402,13 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 .tool-hero h1 { font-size: 26px; }
 .launch-brand { width: 48px; height: 48px; border-radius: 14px; box-shadow: inset 0 1px 0 white, 0 2px 6px rgba(36,52,110,.06); }
 .install-state { margin-top: 3px; }
+.install-status-row { display: flex; align-items: center; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; min-height: 28px; }
+.install-status-row .install-state { margin-top: 0; }
+.launcher-pages .install-inline-action { min-height: 28px; padding: 2px 0; border: 0; border-radius: 0; background: transparent !important; box-shadow: none !important; color: var(--accent); font-size: 12px; line-height: 20px; white-space: nowrap; --button-hover-bg: transparent; }
+.launcher-pages .install-inline-action:is(:hover, :active):not(:disabled) { background: transparent !important; box-shadow: none !important; translate: none; }
+.launcher-pages .install-inline-action:hover:not(:disabled) { text-decoration: underline; }
+.launcher-pages .install-inline-action.has-update { font-weight: 650; }
+.install-version { font-variant-numeric: tabular-nums; }
 .readiness-card { display: flex; align-items: center; gap: 12px; padding: 15px 16px; border-radius: 16px; background: #eef2fc; border: 1px solid #dce4f4; }
 .readiness-card.ok { background: #eff8f4; border-color: #d8ece1; }
 .readiness-card.error { background: #fff2f0; border-color: #f3d8d3; }
@@ -475,18 +486,19 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 .service-row { display: flex; align-items: center; gap: 8px; padding-right: 8px; border: 1px solid transparent; border-radius: 12px; transition: background .15s, border-color .15s; }
 .service-row + .service-row { margin-top: 2px; }
 .service-row:hover { background: rgba(232, 238, 255, .45); }
-.service-row.is-picked { background: rgba(63, 102, 240, .07); border-color: rgba(63, 102, 240, .28); }
+.service-row.is-current { background: rgba(63, 102, 240, .04); }
 .service-row.bad { background: var(--warn-bg); border-color: var(--warn-bd); }
-.launcher-pages .service-pick { display: flex; align-items: center; gap: 11px; flex: 1; min-width: 0; padding: 10px 8px 10px 10px; text-align: left; color: inherit; white-space: normal; background: transparent; border: 0; border-radius: 12px; box-shadow: none; }
-.launcher-pages .service-pick { --button-hover-bg: transparent; }
-.launcher-pages .service-pick:disabled { opacity: .55; cursor: not-allowed; }
-.service-pick[aria-checked="true"] .service-radio { border: 5px solid var(--accent); }
+.service-info { display: flex; align-items: center; gap: 11px; flex: 1; min-width: 0; padding: 10px 8px 10px 10px; text-align: left; }
+.service-info.is-unavailable { opacity: .55; }
 .service-icon { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; border-radius: 9px; color: var(--dim); background: #fff; box-shadow: inset 0 1px 0 #fff, 0 0 0 .5px rgba(24, 36, 80, .1); }
 .service-icon .ui-icon, .service-icon .brand { width: 16px; height: 16px; }
-.service-row.is-picked .service-icon { color: var(--accent); }
+.service-row.is-current .service-icon { color: var(--accent); }
 .service-list.inline .service-text strong { font-size: 14px; }
 .service-list.inline .service-meta span { font-size: 12px; }
 .launcher-pages .service-edit { flex-shrink: 0; height: auto; min-height: 0; padding: 4px 11px; font-size: 12px; }
+.service-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.launcher-pages .service-actions button { min-height: 28px; padding: 4px 9px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
+.service-list.inline .service-current { font-size: 10px; padding: 2px 5px; }
 .launch-configuration > .service-list.inline + button { border-top: 1px solid rgba(40,57,90,.07); }
 
 /* 启动按钮在卡片顶部（紧跟启动方式），下面的提示居中跟在说明后面 */

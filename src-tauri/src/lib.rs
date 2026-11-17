@@ -20,6 +20,7 @@ pub mod ui_lang;
 pub mod updates;
 pub mod tray_menu;
 pub mod client_setup;
+pub mod client_download;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
@@ -192,6 +193,8 @@ pub fn run() {
             tray_menu::take_tray_action,
             client_setup::client_install_guide,
             client_setup::open_client_download,
+            client_setup::open_setup_terminal,
+            client_download::install_client,
             client_setup::check_client_version,
             commands::load_app_state,
             commands::gateway_browser_login_available,
