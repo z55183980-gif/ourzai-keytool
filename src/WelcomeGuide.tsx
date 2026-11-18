@@ -57,9 +57,15 @@ export function WelcomeGuide({ onFinish, onSkip, connect }: { onFinish: (tools: 
       {step === "welcome" || connectDone
         ? <img className="onboarding-wordmark" src={wordmarkUrl} alt="zAI" draggable={false}/>
         : <button type="button" className="onboarding-back" disabled={working} onClick={() => setStep(back)}><UiIcon name="arrow"/>{t("返回")}</button>}
-      <div className="lang-switch" role="radiogroup" aria-label={t("界面语言")}>
-        {LANGS.map(l => <button key={l.id} type="button" role="radio" aria-checked={lang === l.id} onClick={() => setLang(l.id)}>{l.label}</button>)}
-      </div>
+      {/* 轻量语言选择：只显示当前语言，点开是系统下拉菜单 */}
+      <label className="lang-pick">
+        <UiIcon name="globe"/>
+        <span>{LANGS.find(l => l.id === lang)?.label}</span>
+        <svg className="lang-pick-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        <select aria-label={t("界面语言")} value={lang} onChange={event => setLang(event.target.value as typeof lang)}>
+          {LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
+        </select>
+      </label>
     </header>
 
     {step === "welcome" && <section className="onboarding-card">
