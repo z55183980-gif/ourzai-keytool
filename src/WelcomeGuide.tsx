@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import { UiIcon } from "./UiIcon";
-import { LANGS, setLang, t, useLang } from "./i18n";
+import { t, useLang } from "./i18n";
+import { LangPicker } from "./LangPicker";
 import type { Environment, HealthIssue, LaunchMode, Profile, ToolId } from "./types";
 import { InstallStep, installedKinds } from "./InstallStep";
 import { CheckPanel, useEnvCheck } from "./EnvCheck";
@@ -29,7 +30,7 @@ const TOOL_NAME: Record<ToolId, string> = { claude: "Claude Code", codex: "Codex
  * onFinish 带上装了的工具；onSkip 跳过引导直接进主界面。
  */
 export function WelcomeGuide({ onFinish, onSkip, connect }: { onFinish: (tools: ToolId[]) => void; onSkip: () => void; connect: GuideConnect }) {
-  const lang = useLang();
+  useLang(); // 切换语言时整页重新渲染
   const [step, setStep] = useState<Step>("welcome");
   /** 安装进行中：锁住返回、跳过和继续 */
   const [working, setWorking] = useState(false);
@@ -57,15 +58,7 @@ export function WelcomeGuide({ onFinish, onSkip, connect }: { onFinish: (tools: 
       {step === "welcome" || connectDone
         ? <img className="onboarding-wordmark" src={wordmarkUrl} alt="zAI" draggable={false}/>
         : <button type="button" className="onboarding-back" disabled={working} onClick={() => setStep(back)}><UiIcon name="arrow"/>{t("返回")}</button>}
-      {/* 轻量语言选择：只显示当前语言，点开是系统下拉菜单 */}
-      <label className="lang-pick">
-        <UiIcon name="globe"/>
-        <span>{LANGS.find(l => l.id === lang)?.label}</span>
-        <svg className="lang-pick-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        <select aria-label={t("界面语言")} value={lang} onChange={event => setLang(event.target.value as typeof lang)}>
-          {LANGS.map(l => <option key={l.id} value={l.id}>{l.label}</option>)}
-        </select>
-      </label>
+      <LangPicker/>
     </header>
 
     {step === "welcome" && <section className="onboarding-card">
