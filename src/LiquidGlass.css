@@ -122,7 +122,7 @@ body {
   -webkit-backdrop-filter: blur(24px) saturate(145%); backdrop-filter: blur(24px) saturate(145%);
   box-shadow: 0 0 0 .5px rgba(35,46,58,.06), 0 3px 12px rgba(35,46,58,.07);
 }
-.lang-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 330px); }
+.lang-switch { grid-template-columns: repeat(var(--lang-count, 4), minmax(0, 1fr)); width: min(100%, 400px); }
 .settings-page > .lang-switch { width: 100%; margin: 0; }
 .launch-mode-lens, .lang-lens {
   position: absolute; top: 4px; bottom: 4px; left: 4px; z-index: 0;
@@ -130,7 +130,7 @@ body {
   background: rgba(54,70,74,.085);
   transition: transform 420ms cubic-bezier(.22,1.12,.36,1);
 }
-.lang-lens { width: calc((100% - 8px) / 3); }
+.lang-lens { width: calc((100% - 8px) / var(--lang-count, 4)); }
 .tool-hero-head > .launch-modes button { position: relative; z-index: 1; min-width: 0; min-height: 38px; -webkit-tap-highlight-color: transparent; }
 .launch-mode-tab .ui-icon { transition: transform 180ms ease; }
 .launch-mode-tab:focus:not(:focus-visible) { outline: none; }

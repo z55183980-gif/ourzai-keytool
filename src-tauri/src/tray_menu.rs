@@ -78,7 +78,7 @@ pub fn menu_for_preferences<R: tauri::Runtime>(
     let item = |id: &str, text: &str| MenuItem::with_id(app, id, text, true, None::<&str>);
     menu.append(&item(
         "show",
-        ui_lang::pick("显示主窗口", "顯示主視窗", "Show window"),
+        ui_lang::pick("显示主窗口", "顯示主視窗", "Show window", "Показать окно"),
     )?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&item(
@@ -87,6 +87,7 @@ pub fn menu_for_preferences<R: tauri::Runtime>(
             "启动 Claude（上次配置）",
             "啟動 Claude（上次設定）",
             "Launch Claude (saved settings)",
+            "Запустить Claude (сохранённые настройки)",
         ),
     )?)?;
     menu.append(&item(
@@ -95,11 +96,12 @@ pub fn menu_for_preferences<R: tauri::Runtime>(
             "启动 Codex（上次配置）",
             "啟動 Codex（上次設定）",
             "Launch Codex (saved settings)",
+            "Запустить Codex (сохранённые настройки)",
         ),
     )?)?;
     let keys = Submenu::new(
         app,
-        ui_lang::pick("切换密钥…", "切換密鑰…", "Switch key…"),
+        ui_lang::pick("切换密钥…", "切換密鑰…", "Switch key…", "Сменить ключ…"),
         true,
     )?;
     keys.append(&item("key-claude", "Claude")?)?;
@@ -108,7 +110,7 @@ pub fn menu_for_preferences<R: tauri::Runtime>(
     let recent = recent_directories(prefs);
     let folders = Submenu::new(
         app,
-        ui_lang::pick("最近项目目录", "最近專案目錄", "Recent project folders"),
+        ui_lang::pick("最近项目目录", "最近專案目錄", "Recent project folders", "Недавние папки проектов"),
         !recent.is_empty(),
     )?;
     for path in &recent {
@@ -121,7 +123,7 @@ pub fn menu_for_preferences<R: tauri::Runtime>(
         .unwrap_or_else(|e| e.into_inner()) = recent;
     menu.append(&folders)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&item("quit", ui_lang::pick("退出", "退出", "Quit"))?)?;
+    menu.append(&item("quit", ui_lang::pick("退出", "退出", "Quit", "Выход"))?)?;
     Ok(menu)
 }
 

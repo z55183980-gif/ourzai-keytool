@@ -246,6 +246,7 @@ pub fn user_message(ctx: &Context, home: Option<&str>) -> String {
     let reply_lang = match ctx.lang {
         "zh-HK" | "zh-TW" => "\n\n请用繁體中文（香港用语）回答，cause、steps 都用繁體中文。",
         "en" => "\n\n请用英文回答：cause 不超过 25 个英文单词，每条 step 不超过 15 个英文单词；JSON 字段名和 action 取值保持不变。",
+        "ru" => "\n\n请用俄语回答：cause 不超过 25 个俄语单词，每条 step 不超过 15 个俄语单词；JSON 字段名和 action 取值保持不变。",
         _ => "",
     };
     format!(

@@ -103,7 +103,7 @@ export function useEnvCheck({ ignoreProxy, readEnvironment, checkHealth }: {
       if (!environment) throw new Error(t("读取失败"));
       setEnv(environment);
       const broken = TOOLS.some(tool => environment![tool].configurationStatus === "broken");
-      set("config", broken ? "warn" : "ok", TOOLS.map(tool => `${TOOL_NAME[tool]}：${configLabel(environment![tool].configurationStatus)}`).join(t("；")));
+      set("config", broken ? "warn" : "ok", TOOLS.map(tool => `${TOOL_NAME[tool]}${t("：")}${configLabel(environment![tool].configurationStatus)}`).join(t("；")));
     } catch (cause) { set("config", "error", reason(cause)); }
 
     set("health", "running");

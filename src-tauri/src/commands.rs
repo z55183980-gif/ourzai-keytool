@@ -1434,9 +1434,9 @@ fn adopted_profile(tool: health::Tool, desktop: bool, live: &detect::LiveCredent
     let base = live.base_url.trim().trim_end_matches('/').to_string();
     let name = if is_gateway {
         match (tool, desktop) {
-            (Tool::Codex, _) => crate::ui_lang::pick("Codex 配置里的密钥", "Codex 設定裡的密鑰", "Key from Codex config"),
-            (Tool::Claude, false) => crate::ui_lang::pick("Claude 配置里的密钥", "Claude 設定裡的密鑰", "Key from Claude config"),
-            (Tool::Claude, true) => crate::ui_lang::pick("Claude 桌面版配置里的密钥", "Claude 桌面版設定裡的密鑰", "Key from Claude desktop config"),
+            (Tool::Codex, _) => crate::ui_lang::pick("Codex 配置里的密钥", "Codex 設定裡的密鑰", "Key from Codex config", "Ключ из конфигурации Codex"),
+            (Tool::Claude, false) => crate::ui_lang::pick("Claude 配置里的密钥", "Claude 設定裡的密鑰", "Key from Claude config", "Ключ из конфигурации Claude"),
+            (Tool::Claude, true) => crate::ui_lang::pick("Claude 桌面版配置里的密钥", "Claude 桌面版設定裡的密鑰", "Key from Claude desktop config", "Ключ из конфигурации Claude Desktop"),
         }
         .to_string()
     } else {

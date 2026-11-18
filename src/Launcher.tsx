@@ -921,7 +921,7 @@ export function Launcher(props: {
 
       {/* 界面语言：简体 / 繁體 / English，默认跟随系统 */}
       <h2 className="settings-section">{t("语言")}</h2>
-      <div className="lang-switch" role="radiogroup" aria-label={t("界面语言")}>
+      <div className="lang-switch" role="radiogroup" aria-label={t("界面语言")} style={{ "--lang-count": LANGS.length } as React.CSSProperties}>
         <span className="lang-lens" aria-hidden="true" style={{ transform: `translateX(${LANGS.findIndex(l => l.id === lang) * 100}%)` }}/>
         {LANGS.map(l => <button key={l.id} className="lang-tab" type="button" role="radio" aria-checked={lang === l.id} onClick={() => setLang(l.id)}>{l.label}</button>)}
       </div>

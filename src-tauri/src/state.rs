@@ -343,7 +343,7 @@ fn change_key_and_save(
 /// 不能用「个数+1」：删掉中间某个后再新建会和现存的重名。
 pub fn next_default_name(profiles: &[Profile]) -> String {
     for n in 1.. {
-        let candidate = format!("{} {}", crate::ui_lang::pick("密钥", "密鑰", "Key"), n);
+        let candidate = format!("{} {}", crate::ui_lang::pick("密钥", "密鑰", "Key", "Ключ"), n);
         if !profiles.iter().any(|p| p.name == candidate) {
             return candidate;
         }
@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn default_name_skips_taken_numbers() {
-        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key", "Ключ");
         let list = vec![p(&format!("{prefix} 1")), p(&format!("{prefix} 3"))];
         assert_eq!(next_default_name(&list), format!("{prefix} 2"));
     }
@@ -642,21 +642,21 @@ mod tests {
     #[test]
     fn default_name_avoids_collision_after_delete() {
         // 原本有默认名 1 / 2，删掉 1 后只剩一个
-        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key", "Ключ");
         let list = vec![p(&format!("{prefix} 2"))];
         assert_eq!(next_default_name(&list), format!("{prefix} 1"));
     }
 
     #[test]
     fn default_name_on_empty_list() {
-        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key", "Ключ");
         assert_eq!(next_default_name(&[]), format!("{prefix} 1"));
     }
 
     #[test]
     fn custom_names_do_not_block_numbering() {
         let list = vec![p("主号"), p("测试号")];
-        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key");
+        let prefix = crate::ui_lang::pick("密钥", "密鑰", "Key", "Ключ");
         assert_eq!(next_default_name(&list), format!("{prefix} 1"));
     }
 }
