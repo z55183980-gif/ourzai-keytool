@@ -65,6 +65,7 @@ export interface GatewayToken {
 }
 
 export interface ImportResult {
+  profileIds: string[];
   created: string[];
   updated: string[];
   unchanged: string[];

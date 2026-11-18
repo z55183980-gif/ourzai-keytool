@@ -21,6 +21,8 @@ export interface LogLine {
   group?: string;
   batch?: number;
   actions?: LogAction[];
+  /** 只给工具页底部的提示条用的撤销（日志里已有「撤销这次改动」，不重复显示） */
+  undo?: () => void;
 }
 export interface ConsoleStatus {
   level: "ok" | "warn" | "error" | "idle";

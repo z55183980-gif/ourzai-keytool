@@ -111,7 +111,7 @@ export function mockProfiles(s: Scenario): Profile[] {
 export function mockSaveProfile(s: Scenario, req: SaveProfileRequest): string {
   const list = mockProfiles(s);
   const old = list.find(p => p.id === req.id);
-  const id = old?.id || `p${Date.now()}`;
+  const id = old?.id || `p${crypto.randomUUID()}`;
   const next: Profile = {
     ...(old ?? { id, maskedKey: "", hasKey: false }),
     id, name: req.name || old?.name || "新密钥",
@@ -356,6 +356,19 @@ export function mockKeyStatus(): KeyStatus[] {
     { profileId: "p1", usable: true, missing: false, note: "" },
     { profileId: "p2", usable: false, missing: false, note: "已停用" },
   ];
+}
+
+const importedIds = new Map<number, string>();
+
+export function mockImportTokens(scenario: Scenario, ids: number[]) {
+  const profileIds: string[] = [], created: string[] = [], unchanged: string[] = [];
+  for (const token of mockTokens().filter(token => token.usable && ids.includes(token.id))) {
+    const existing = mockProfiles(scenario).find(profile => profile.id === importedIds.get(token.id) || (token.linkedProfile && !profile.custom && profile.name === token.linkedProfile));
+    if (existing) { profileIds.push(existing.id); unchanged.push(existing.name); continue; }
+    const id = mockSaveProfile(scenario, { id: "", name: token.name, apiKey: "preview-only", codexModel: "", claudeModel: "", codexEffort: "medium" });
+    importedIds.set(token.id, id); profileIds.push(id); created.push(token.name);
+  }
+  return { profileIds, created, unchanged, updated: [], skipped: [] };
 }
 
 export function mockTokens(): GatewayToken[] {

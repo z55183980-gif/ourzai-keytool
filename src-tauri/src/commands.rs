@@ -463,6 +463,7 @@ pub async fn gateway_adopt_token(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
+    pub profile_ids: Vec<String>,
     pub created: Vec<String>,
     /// 已关联过，值换成了最新的
     pub updated: Vec<String>,
@@ -487,6 +488,7 @@ pub async fn gateway_import_tokens(
     let account = s.account_scope()?;
 
     let mut out = ImportResult {
+        profile_ids: Vec::new(),
         created: Vec::new(),
         updated: Vec::new(),
         unchanged: Vec::new(),
@@ -512,7 +514,8 @@ pub async fn gateway_import_tokens(
             existing.gateway_token_id = Some(id);
             existing.gateway_account = Some(account.clone());
             match state::upsert_profile(existing.clone(), Some(&key)) {
-                Ok(_) => {
+                Ok(saved) => {
+                    out.profile_ids.push(saved.id);
                     if unchanged {
                         out.unchanged.push(existing.name);
                     } else {
@@ -544,7 +547,10 @@ pub async fn gateway_import_tokens(
             ..Default::default()
         };
         match state::upsert_profile(profile, Some(&key)) {
-            Ok(_) => out.created.push(name),
+            Ok(saved) => {
+                out.profile_ids.push(saved.id);
+                out.created.push(name);
+            }
             Err(_) => out.skipped.push(t.name.clone()),
         }
     }

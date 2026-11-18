@@ -16,17 +16,13 @@
   font-size: 12px; color: #3051c3; background: rgba(255, 255, 255, .78) !important; border: 0 !important; border-radius: 9px; box-shadow: none !important;
 }
 .readiness-action .ui-icon { width: 14px; height: 14px; }
-/* Healthy status is one line; override the full card's fixed height here. */
-.readiness-card.status-card.compact-status { --status-h: 32px; min-height: 32px; padding: 0; gap: 8px; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
-.compact-status .readiness-icon { width: 18px; height: 18px; background: transparent; border-radius: 0; }
-.compact-status .status-card-body { flex-direction: row; align-items: center; justify-content: flex-start; overflow: visible; }
-.compact-status strong { font-size: 12px; }
-.launcher-pages .compact-status .readiness-action { min-height: 28px; padding: 2px 4px; font-size: 12px; background: transparent !important; --button-hover-bg: transparent; }
-/* 一切正常这一行：左侧「✓ 一切正常 · 重新检查」，右侧是「启动后遇到问题？」这类次要动作 */
-.compact-status .status-card-body { gap: 4px; }
-.compact-status .status-card-body > .readiness-action { margin-left: 4px; }
-.launcher-pages .compact-status .readiness-action.status-help { margin-left: auto; color: #5b677c; }
-.launcher-pages .compact-status .readiness-action.status-help:hover:not(:disabled) { color: #3051c3; }
+.launch-controls { display: grid; gap: 6px; min-width: 0; }
+.launch-status-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 2px 12px; padding: 0 4px; }
+.launch-ready { display: inline-flex; align-items: center; gap: 5px; color: #1d6b4c; font-size: 12px; font-weight: 600; }
+.launch-ready .ui-icon { width: 15px; height: 15px; }
+.launch-status-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px 8px; margin-inline-start: auto; }
+.launcher-pages .launch-status-actions .readiness-action { min-height: 28px; padding: 3px 4px; color: var(--dim); background: transparent !important; --button-hover-bg: transparent; }
+.launcher-pages .launch-status-actions .readiness-action:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
 .launcher-pages .repair-dismiss {
   position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 22px; height: 22px; padding: 0;
   color: #6b778c; background: transparent !important; border: 0 !important; border-radius: 7px; box-shadow: none !important;
@@ -40,11 +36,6 @@
 /* 主按钮：修复用 zAI 的品牌色，和「启动」区分开；次要动作是一行轻文字 */
 .launcher-pages .tool-hero .launch-button.is-repair { color: #fff !important; background: linear-gradient(180deg, #e2774f, #d0603a) !important; border-color: transparent !important; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 5px 12px rgba(208, 96, 58, .22) !important; }
 .launcher-pages .tool-hero .launch-button.is-repair:hover:not(:disabled) { background: linear-gradient(180deg, #e8835c, #d66a44) !important; }
-.launcher-pages .launch-secondary {
-  align-self: center; margin-top: -8px; padding: 2px 8px; font-size: 12px; color: #5b677c;
-  background: transparent !important; border: 0 !important; box-shadow: none !important;
-}
-.launcher-pages .launch-secondary:hover:not(:disabled) { color: #3051c3; }
 
 /* 修复卡：进度 / 选择，占住启动卡片的正文 */
 .repair-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 16px; background: rgba(255, 255, 255, .66); border: 1px solid rgba(40, 57, 90, .09); animation: repair-in .18s ease-out; }
@@ -89,3 +80,14 @@
   .repair-card { animation: none; }
   .readiness-icon.is-spinning .ui-icon, .repair-steps li.active .repair-step-mark { animation: none; }
 }
+
+/* 工具页底部提示条：底边倒计时条走完自动收起，悬停暂停；有改动时带撤销按钮 */
+.workspace-main .toast.flash { display: flex; align-items: center; gap: 12px; overflow: hidden; position: sticky; padding-bottom: 12px; animation: flash-in .28s cubic-bezier(.32,.72,0,1) both; }
+.flash-text { flex: 1; min-width: 0; }
+.workspace-main .toast.flash button.flash-undo { flex-shrink: 0; height: 28px; padding: 0 14px; border: 1px solid currentColor; border-radius: 999px; background: rgba(255,255,255,.7); box-shadow: none; color: inherit; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.workspace-main .toast.flash button.flash-undo:hover:not(:disabled) { background: #fff; border-color: currentColor; }
+.flash-timer { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: currentColor; opacity: .35; transform-origin: left center; animation: flash-countdown var(--flash-ms, 5000ms) linear forwards; }
+.workspace-main .toast.flash:hover .flash-timer { animation-play-state: paused; }
+@keyframes flash-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes flash-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .workspace-main .toast.flash { animation: none; } }

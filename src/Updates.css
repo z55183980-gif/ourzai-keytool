@@ -2,8 +2,10 @@
 .update-gate { width: min(100%, 460px); padding: 26px; border-radius: 24px; background: #ffffffed; box-shadow: 0 16px 55px #26364b18; box-sizing: border-box; }
 .update-gate h1 { font-size: 23px; margin: 20px 0 10px; }
 .update-gate p { line-height: 1.65; }
-.update-language { display: flex; justify-content: flex-end; gap: 8px; }
-.update-language button, .update-dismiss { font-size: 12px; border: 0; background: none; color: #58708b; cursor: pointer; }
+.update-language { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 18px; font-size: 12px; color: #58708b; }
+.update-language select { min-width: 116px; padding: 7px 28px 7px 10px; border: 1px solid #d8e0ea; border-radius: 8px; color: #26364b; background: #fff; font: inherit; cursor: pointer; }
+.update-language select:focus-visible { outline: 2px solid #80b7bb; outline-offset: 2px; }
+.update-dismiss { font-size: 12px; border: 0; background: none; color: #58708b; cursor: pointer; }
 .update-panel { padding: 16px; border: 1px solid #dbe3ed; border-radius: 16px; background: #ffffffaa; font-size: 13px; color: #26364b; }
 .update-panel h2 { margin: 0 0 8px; font-size: 16px; }
 .update-gate .update-panel { padding: 0; border: 0; background: none; }

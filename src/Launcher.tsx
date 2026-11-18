@@ -3,15 +3,18 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { runTrayAction, TrayConsumer } from "./trayFlow";
 import * as mock from "./mock";
+import { needsConnectionGuide } from "./onboarding";
+import { ConnectionGuide, type ImportDialog } from "./ConnectionGuide";
 import { ClientSetup } from "./ClientSetup";
 import { ClientInstallStatus } from "./ClientInstallStatus";
 import { ClientVersionCache } from "./clientVersionCache";
 import * as api from "./api";
 import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import { UiIcon } from "./UiIcon";
+import { ServiceKeyRow } from "./ServiceKeyRow";
 import { OutputConsole, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
 import { RepairCard, type RepairView } from "./RepairCard";
-import { EFFORTS, effortLabel, groupByFamily, supports } from "./modelFamilies";
+import { EFFORTS, groupByFamily, supports } from "./modelFamilies";
 import { LANGS, setLang, t, useLang } from "./i18n";
 import { UpdatePanel, useUpdates } from "./Updates";
 import { profileTitle, supportsTool, type AskOption, type Diagnosis, type Environment, type HealthFix, type HealthIssue, type LauncherPreferences, type LauncherScan, type LaunchMode, type LaunchTarget, type Profile, type ToolId, type ModelInfo } from "./types";
@@ -26,7 +29,7 @@ const TARGETS: LaunchTarget[] = ["claude-desktop", "claude-cli", "codex-desktop"
 const targetName = (target: LaunchTarget) => { const [tool, mode] = target.split("-") as [ToolId, LaunchMode]; return mode === "cli" ? TOOLS[tool].cli : t("{name} 桌面版", { name: TOOLS[tool].name }); };
 const folderName = (path: string) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 
-export type Page = ToolId | "keys" | "settings";
+export type Page = "welcome" | ToolId | "keys" | "settings";
 
 /** 居中的玻璃弹窗：按 Esc 关闭，点遮罩也关闭（表单类弹窗传 keepOnOverlay 关掉这条）；打开时焦点落在当前选中项或第一个输入框上 */
 export function PickerDialog(props: { title: string; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode; className?: string; keepOnOverlay?: boolean }) {
@@ -102,8 +105,9 @@ export function Launcher(props: {
   env: Environment | null;
   onLaunch: (tool: ToolId, mode: LaunchMode, service: string, directory: string) => Promise<boolean>;
   onSaveConfiguration: (tool: ToolId, mode: LaunchMode, service: string) => Promise<boolean>;
-  onEditProfile: (profile: Profile) => void;
   onKeys: (tool?: ToolId) => void;
+  onEditProfile: (profile: Profile) => void;
+  onTestProfile: (profile: Profile) => Promise<void>;
   onSettings: () => void;
   onAdvanced: () => void;
   onRefresh: () => Promise<void>;
@@ -137,9 +141,13 @@ export function Launcher(props: {
   onAdopt: (tool: ToolId, desktop?: boolean) => void;
   /** 每个工具是否已同意读取本机配置；null = 还不知道。没同意的工具页先显示遮罩，不读它的配置 */
   configRead: Record<ToolId, boolean> | null;
-  /** 引导卡片：去密钥页登录导入 / 手动粘贴 Key */
   onLoginImport: () => void;
-  onManualKey: () => void;
+  renderImport: ImportDialog;
+  defaultUrl: string;
+  ignoreProxy: boolean;
+  guideWorking: boolean;
+  onGuideWorking: (busy: boolean) => void;
+  onGuideApply: (tool: ToolId, mode: LaunchMode, id: string) => Promise<boolean>;
   /** 同意并读取这些工具的本机配置，返回读到的配置 */
   onReadConfig: (tools: ToolId[]) => Promise<Environment | null>;
 }) {
@@ -165,7 +173,7 @@ export function Launcher(props: {
     const list = serviceListRef.current;
     if (!list) return;
     list.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    (list.querySelector<HTMLElement>('.is-current .service-enable:not(:disabled)') ?? list.querySelector<HTMLElement>('.service-enable:not(:disabled)'))?.focus({ preventScroll: true });
+    list.querySelector<HTMLElement>('.service-enable:not(:disabled)')?.focus({ preventScroll: true });
   });
   /** 「更换模型」弹窗里正在编辑的值 */
   const [modelEdit, setModelEdit] = useState<{ model: string; effort: string }>({ model: "", effort: "medium" });
@@ -174,6 +182,7 @@ export function Launcher(props: {
   /** 设置页：正在修改哪个程序的路径（弹窗） */
   const [pathEdit, setPathEdit] = useState<LaunchTarget | null>(null);
   const [setupTarget, setSetupTarget] = useState<LaunchTarget | null>(null);
+  const [officialTargets, setOfficialTargets] = useState<LaunchTarget[]>([]);
   const clientVersions = useRef(new ClientVersionCache()).current;
   const [trayWorking, setTrayWorking] = useState(false);
   /** 会覆盖配置文件的环境变量（只有变量名）；null = 还没读到 */
@@ -316,7 +325,7 @@ export function Launcher(props: {
     pendingAfterPage.current = run;
     props.onPage(tool);
   };
-  const trayReady = !!prefs && !!props.configRead && (!readTools.length || !!props.env) && !props.busy && !saving && !refreshing && !streaming && !repairing && updates.state.phase === "idle";
+  const trayReady = !props.guideWorking && !!prefs && !!props.configRead && (!readTools.length || !!props.env) && !props.busy && !saving && !refreshing && !streaming && !repairing && updates.state.phase === "idle";
   const trayRuntime = useRef({ ready: trayReady, run: async (_action: import("./trayFlow").TrayAction) => {} });
   trayRuntime.current = { ready: trayReady, run: async action => {
     if (!prefsRef.current) return;
@@ -351,8 +360,7 @@ export function Launcher(props: {
     }
     return t(({ official: "官方服务", unconfigured: "尚未配置", custom: "自定义服务", unknown: "未能识别的服务", broken: "配置文件损坏" } as const)[config.configurationStatus]);
   };
-  /** 当前配置里有读得到、没保存在本工具的密钥（zAI 或第三方）：服务列表里可以直接「加入密钥」 */
-  const adoptable = (tool: ToolId) => !!cfg(tool)?.adoptable;
+
   /** 只属于某个工具的环境变量 */
   const varsOf = (tools: ToolId[], names: string[]) =>
     names.filter(n => (tools.includes("claude") && /^(ANTHROPIC|CLAUDE)_/.test(n)) || (tools.includes("codex") && /^(OPENAI|CODEX)_/.test(n)));
@@ -416,7 +424,7 @@ export function Launcher(props: {
       const names = varsOf(tools, all);
       if (names.length) props.log("warn", t("环境变量 {names} 已设置，会覆盖配置文件", { names: names.join(t("、")) }), { group, batch });
       else props.log("ok", t("环境变量：没有会覆盖配置文件的设置"), { group, batch });
-    } finally {
+    } catch (cause) { setError(errText(cause)); } finally {
       setStreaming(false);
     }
   };
@@ -619,11 +627,8 @@ export function Launcher(props: {
     if (last.group || (last.kind !== "ok" && last.kind !== "err") || repairing || (page && repair[page])) return;
     setFlash(last);
   }, [props.logs]);
-  useEffect(() => {
-    if (!flash) return;
-    const timer = setTimeout(() => setFlash(null), flash.kind === "err" ? 8000 : 4000);
-    return () => clearTimeout(timer);
-  }, [flash]);
+  /** 提示条停留时长：底部倒计时条走完就收起；鼠标悬停时暂停 */
+  const flashMs = flash?.kind === "err" ? 8000 : 5000;
 
   /** 一个工具的完整页面：顶部启动区，下面依次是服务、模型（选了 zAI 密钥时）、工作目录（仅 CLI），再下面是输出面板 */
   function toolPage(tool: ToolId) {
@@ -648,24 +653,33 @@ export function Launcher(props: {
         await props.onSaveConfiguration(tool, mode, value);
       } finally { activatingRef.current = false; setActivating(false); }
     };
-    const metaLine = (parts: (string | null | undefined)[], monoFirst?: boolean) => <small className="service-meta">{parts.filter(Boolean).map((part, i) => <span key={i} className={monoFirst && i === 0 ? "mono" : undefined} title={part!}>{part}</span>)}</small>;
-    // 左侧仅展示信息；只有一个状态「当前生效」，其余项右侧「切换」即写入配置。
-    const option = (value: string, icon: React.ReactNode, title: string, parts: (string | null | undefined)[], opts: { off?: boolean; monoFirst?: boolean; bad?: boolean; edit?: boolean } = {}) =>
-      <div key={value} role="listitem" className={`service-row ${live === value ? "is-current" : ""} ${opts.bad ? "bad" : ""}`}>
+    const metaLine = (parts: (string | null | undefined)[], monoFirst?: boolean, action?: React.ReactNode) => <small className="service-meta">{parts.filter(Boolean).map((part, i) => <span key={i} className={monoFirst && i === 0 ? "mono" : undefined} title={part!}>{part}</span>)}{action}</small>;
+    const serviceTitle = (title: string, active: boolean, profile?: Profile) => <span className="service-title"><strong>{profile
+      ? <button type="button" className="site service-key-title" disabled={disabled} title={t("编辑「{name}」", { name: title })} onClick={() => props.onEditProfile(profile)}>{title}</button>
+      : title}</strong>{active && <span className="service-current"><UiIcon name="check"/>{t("使用中")}</span>}</span>;
+    const option = (value: string, icon: React.ReactNode, title: string, details: React.ReactNode, opts: { off?: boolean; profile?: Profile } = {}) => {
+      const { profile } = opts;
+      const className = live === value ? "service-row is-current" : "service-row";
+      const switchDisabled = disabled || !!opts.off || !!broken || live === value;
+      const contents = <>
         <div className={`service-info ${opts.off ? "is-unavailable" : ""}`}>
           <span className="service-icon" aria-hidden="true">{icon}</span>
-          <span className="service-text"><strong>{title}</strong>{metaLine(parts, opts.monoFirst)}</span>
+          <span className="service-text">{serviceTitle(title, live === value, profile)}{details}</span>
         </div>
-        {live === value && <span className="service-current">{t("当前生效")}</span>}
-        {(opts.edit || live !== value) && <div className="service-actions">
-          {opts.edit && <button type="button" className="service-edit" disabled={disabled} onClick={() => { const profile = props.profiles.find(p => p.id === value); if (profile) props.onEditProfile(profile); }}>{t("编辑")}</button>}
-          {live !== value && <button type="button" className="service-enable" disabled={disabled || opts.off || !!broken} onClick={() => void activateService(value)}
-            title={t("写入配置，不启动应用")}>{t("切换")}</button>}
-        </div>}
-      </div>;
+        {live !== value && <button type="button" className="service-enable" disabled={switchDisabled} onClick={() => void activateService(value)}
+          aria-label={t("切换到 {name}", { name: title })} title={t("写入配置，不启动应用")}>{t("切换")}</button>}
+      </>;
+      return profile ? <ServiceKeyRow key={value} className={className} title={title} disabled={disabled} actions={[
+        { label: "编辑", run: () => props.onEditProfile(profile) },
+        { label: "切换", disabled: switchDisabled, run: () => void activateService(value) },
+        { label: "测试", disabled: !profile.hasKey, run: () => void props.onTestProfile(profile) },
+      ]}>{contents}</ServiceKeyRow> : <div key={value} className={className} role="listitem">{contents}</div>;
+    };
     // 当前配置不对应列表里任何一项时（第三方密钥、未保存的 zAI 密钥、识别不出……）：
     // 在列表最上面单独一行显示它，读得到密钥的可以直接「加入密钥」
     const status = config?.configurationStatus;
+    const needsConnection = needsConnectionGuide(config);
+    const guide = needsConnection && !officialTargets.includes(target);
     const inEffect = status !== "unconfigured" && status !== "broken";
     const currentHost = hostOf(config?.currentBaseUrl);
     const currentTitle = config?.unsavedGatewayKey ? t("zAI 密钥（未保存）")
@@ -680,15 +694,11 @@ export function Launcher(props: {
     const currentRow = !live && config && <div role="listitem" className={`service-row current-config ${status === "broken" ? "bad" : inEffect ? "is-current" : ""}`}>
       <div className="service-info">
         <span className="service-icon" aria-hidden="true"><UiIcon name={config.currentKeyMasked ? "key" : "settings"}/></span>
-        <span className="service-text"><strong>{currentTitle}</strong>{metaLine([config.currentKeyMasked, config.currentModel, currentHint], !!config.currentKeyMasked)}</span>
+        <span className="service-text">{serviceTitle(currentTitle, inEffect)}{metaLine([config.currentKeyMasked, config.currentModel, currentHint], !!config.currentKeyMasked)}
+          {config.adoptable && <button type="button" className="site" disabled={disabled} onClick={() => props.onAdopt(tool, tool === "claude" && desktopClaude)} title={t("测试可用后保存到密钥列表，不改动配置")}>{t("加入密钥")}</button>}
+        </span>
       </div>
-      {inEffect && <span className="service-current">{t("当前生效")}</span>}
-      {config.adoptable && <div className="service-actions">
-        <button type="button" className="service-enable" disabled={disabled} onClick={() => props.onAdopt(tool, tool === "claude" && desktopClaude)}
-          title={t("测试可用后保存到密钥列表，不改动配置")}>{t("加入密钥")}</button>
-      </div>}
     </div>;
-    const model = selected?.hasKey ? modelOf(tool, selected) : "";
     const issues = health[tool];
     const checking = streaming || refreshing || !scan || issues === null;
     const errors = issues?.filter(i => i.level === "error") ?? [];
@@ -718,7 +728,7 @@ export function Launcher(props: {
     const secondary: LogAction | null = missing ? { label: t("已安装？设置程序路径"), run: props.onSettings }
       : blocker?.id === "K1" ? { label: t("去控制台 ↗"), run: props.onConsole }
       : !launchIsMain && !launchDisabled ? { label: t("仍然启动"), run: () => void launchNow() }
-      : launchIsMain && !launchDisabled && !errors.length ? { label: t("启动后遇到问题？"), run: () => setRepair(tool, { phase: "symptom" }) }
+      : launchIsMain && !launchDisabled && !errors.length ? { label: t("问题排查"), run: () => setRepair(tool, { phase: "symptom" }) }
       : null;
 
     /**
@@ -744,10 +754,12 @@ export function Launcher(props: {
       if (checking) return <div className="readiness-card status-card" role="status"><span className="readiness-icon is-spinning"><UiIcon name="refresh"/></span><div className="status-card-body"><strong>{t("正在检查…")}</strong></div></div>;
       if (issues === undefined) return <div className="readiness-card status-card warn"><span className="readiness-icon"><UiIcon name="alert"/></span>
         <div className="status-card-body"><strong>{t("暂时无法检查")}</strong></div>{recheckBtn}</div>;
-      // 一切正常时，「重新检查」和次要动作（如「启动后遇到问题？」）并进同一行
-      if (!issues.length) return <div className="readiness-card status-card ok compact-status"><span className="readiness-icon"><UiIcon name="check"/></span>
-        <div className="status-card-body"><strong>{t("一切正常")}</strong>{recheckBtn}</div>
-        {secondary && <button type="button" className="readiness-action status-help" disabled={disabled} onClick={secondary.run}>{secondary.label}</button>}</div>;
+      if (!issues.length) return <div className="launch-status-bar">
+        <span className="launch-ready" role="status"><UiIcon name="check"/>{t("检查通过")}</span>
+        <div className="launch-status-actions">{recheckBtn}
+          {secondary && <button type="button" className="readiness-action" disabled={disabled} onClick={secondary.run}>{secondary.label}</button>}
+        </div>
+      </div>;
       return <div className={`readiness-card status-card ${errors.length ? "error" : "warn"}`}>
         <span className="readiness-icon"><UiIcon name="alert"/></span>
         <div className="status-card-body">
@@ -779,54 +791,68 @@ export function Launcher(props: {
         <div className="tool-hero-head">
           <span className={`launch-brand ${tool}`}><meta.Icon className={`brand brand-${tool}`} /></span>
           <div className="launch-title"><h1>{meta.name}</h1>
-            <ClientInstallStatus key={target} cache={clientVersions} target={target} installation={installed} disabled={disabled || repairing}
-              scanning={refreshing} managerOpen={setupTarget === target} onOpen={() => setSetupTarget(target)} />
+            {consented(tool) && !guide && !missing && <ClientInstallStatus key={target} cache={clientVersions} target={target} installation={installed} disabled={disabled || repairing}
+              scanning={refreshing} managerOpen={setupTarget === target} onOpen={() => setSetupTarget(target)} />}
           </div>
-          <div className="launch-modes" role="group" aria-label={t("{tool} 启动方式", { tool: meta.name })}>
+          {consented(tool) && <div className="launch-modes" role="group" aria-label={t("{tool} 启动方式", { tool: meta.name })}>
             <span className="launch-mode-lens" aria-hidden="true" style={{ transform: `translateX(${mode === "cli" ? 100 : 0}%)` }}/>
-            {(["desktop", "cli"] as const).map(m => <button key={m} className="launch-mode-tab" aria-pressed={mode === m} disabled={disabled || repairing} onClick={() => save({ [`${tool}Mode`]: m })}><UiIcon name={m === "desktop" ? "desktop" : "terminal"}/>{m === "desktop" ? t("桌面版") : "CLI"}</button>)}
-          </div>
+            {(["desktop", "cli"] as const).map(m => <button key={m} className="launch-mode-tab" aria-pressed={mode === m} disabled={disabled || repairing || props.guideWorking} onClick={() => save({ [`${tool}Mode`]: m })}><UiIcon name={m === "desktop" ? "desktop" : "terminal"}/>{m === "desktop" ? t("桌面版") : "CLI"}</button>)}
+          </div>}
         </div>
 
         {/* 首次使用：先读取本机配置。点之前什么都不读 */}
         {!consented(tool) ? <div className="read-gate">
           <span className="onboard-mark"><UiIcon name="shield"/></span>
-          <strong>{t("先了解你的 {tool} 环境", { tool: meta.name })}</strong>
-          <span>{t("只读取安装、服务和模型信息，不修改配置。")}</span>
+          <strong>{t("开始使用 {tool}", { tool: meta.name })}</strong>
+          <span>{t("检查安装和配置，不做修改。")}</span>
           <button className="primary with-icon" disabled={!props.configRead || streaming || props.busy} onClick={() => void readLocalConfig([tool])}>
-            <UiIcon name="refresh"/>{streaming ? t("读取中…") : t("读取本机 {tool} 配置", { tool: meta.name })}
+            <UiIcon name="refresh"/>{streaming ? t("读取中…") : t("检查并继续")}
           </button>
-          <button className="site" onClick={() => setSetupTarget(target)}>{t("安装 / 更新指引")}</button>
-        </div> : repairView ? <RepairCard key={`${tool}-${r?.phase}`} view={repairView} disabled={disabled} /> : <>
+        </div> : missing ? <div className="connection-guide"><h2>{t("未检测到 {name}", { name: targetName(target) })}</h2>
+          <button className="primary" disabled={disabled} onClick={() => setSetupTarget(target)}>{t("安装 {name}", { name: targetName(target) })}</button>
+          <button className="site" disabled={disabled} onClick={() => void chooseProgram(target)}>{t("已安装？设置程序路径")}</button>
+        </div> : !installed || !config ? <div className="connection-guide" role="status"><p>{t(refreshing || streaming || !prefs ? "正在检查…" : "暂时无法检查")}</p><button className="site" disabled={disabled || streaming} onClick={() => void readLocalConfig([tool])}>{t("重新检查")}</button></div>
+        : guide ? <ConnectionGuide key={target} tool={tool} disabled={disabled || streaming} working={props.onGuideWorking}
+          profiles={props.profiles.filter(profile => profile.hasKey && supportsTool(profile, tool))} defaultUrl={props.defaultUrl} ignoreProxy={props.ignoreProxy} renderImport={props.renderImport}
+          apply={id => props.onGuideApply(tool, mode, id)} launchOfficial={async () => {
+            if (!prefs) return;
+            if (await props.onLaunch(tool, mode, LIVE, prefs.projectDirectory)) setOfficialTargets(previous => [...previous, target]);
+          }} /> : repairView ? <RepairCard key={`${tool}-${r?.phase}`} view={repairView} disabled={disabled} /> : <>
         {/* 工作目录（仅 CLI）：启动按钮上方一行，点击打开目录选择 */}
         {mode === "cli" && <button type="button" className="site workdir-inline" aria-haspopup="dialog" aria-label={t("工作目录：{path}，点击更换", { path: prefs?.projectDirectory ?? "" })} title={prefs?.projectDirectory} disabled={disabled} onClick={() => setPicker("workdir")}>
           <UiIcon name="folder"/><span className="workdir-inline-path">{prefs ? prefs.projectDirectory : t("读取中…")}</span><span className="workdir-inline-switch">{t("更换")}</span>
         </button>}
-        <button className={`primary launch-button ${main.kind === "repair" ? "is-repair" : ""}`} disabled={main.off} title={main.title} onClick={main.run}><UiIcon name={main.icon}/>{main.label}</button>
-        {secondary && !statusIsCompactOk && <button type="button" className="launch-secondary" disabled={disabled} onClick={secondary.run}>{secondary.label}</button>}
-        {statusCard()}
+        <div className="launch-controls">
+          <button className={`primary launch-button ${main.kind === "repair" ? "is-repair" : ""}`} disabled={main.off} title={main.title} onClick={main.run}><UiIcon name={main.icon}/>{main.label}</button>
+          {statusCard()}
+          {(secondary && !statusIsCompactOk || needsConnection && officialTargets.includes(target)) && <div className="launch-status-actions">
+            {secondary && !statusIsCompactOk && <button type="button" className="readiness-action" disabled={disabled} onClick={secondary.run}>{secondary.label}</button>}
+            {needsConnection && officialTargets.includes(target) && <button type="button" className="readiness-action" disabled={disabled} onClick={() => setOfficialTargets(previous => previous.filter(item => item !== target))}>{t("更换连接方式")}</button>}
+          </div>}
+        </div>
         <div className="launch-configuration">
 
         {/* 服务：只有一个状态「当前生效」，启动就用它；其余项点「切换」立即写入配置 */}
         <div className="service-head">
-          <span className="config-label">{t("使用服务")}</span>
-          <button type="button" className="site service-manage" disabled={disabled} onClick={() => props.onKeys(tool)}>{t("管理密钥 →")}</button>
+          <span className="config-label">{t("服务")}</span>
         </div>
         <div className="service-list inline" role="list" aria-label={t("{tool} 使用服务", { tool: meta.name })} ref={serviceListRef}>
           {currentRow}
-          {option("official", <meta.Icon className={`brand brand-${tool}`}/>, t("官方服务"), [t("使用你自己的官方账号登录")])}
-          {props.profiles.map(p => option(p.id, <UiIcon name="key"/>, profileTitle(p),
-            !p.hasKey ? [t("缺少密钥，请到密钥页补上")]
-              : !supportsTool(p, tool) ? [t("没有填 {tool} 地址", { tool: meta.cli })]
-              : [p.maskedKey, modelOf(tool, p) || (p.custom ? t("客户端默认模型") : "")],
-            { off: !p.hasKey || !supportsTool(p, tool), monoFirst: p.hasKey && supportsTool(p, tool), edit: true }))}
+          {option("official", <meta.Icon className={`brand brand-${tool}`}/>, t("官方服务"), metaLine([t("使用你自己的官方账号登录")]))}
+          {props.profiles.map(profile => {
+            const unavailable = !profile.hasKey ? t("缺少密钥，请到密钥页补上")
+              : !supportsTool(profile, tool) ? t("没有填 {tool} 地址", { tool: meta.cli }) : null;
+            const model = modelOf(tool, profile) || t("默认模型");
+            const details = unavailable ? metaLine([unavailable]) : selected?.id !== profile.id ? metaLine([profile.maskedKey, model], true)
+              : metaLine([profile.maskedKey], true, <button type="button" className="site service-model" disabled={disabled} aria-haspopup="dialog"
+                  aria-label={t("{tool} 模型：{model}，点击更换", { tool: meta.name, model })} title={model} onClick={() => openModel(tool, profile)}>
+                  <span>{model}</span><b aria-hidden="true">▾</b>
+                </button>);
+            return option(profile.id, <UiIcon name="key"/>, profileTitle(profile), details, { off: !!unavailable, profile });
+          })}
         </div>
 
-        {mode === "cli" && <small className="dim">{t("此处核对用户配置；项目设置或组织策略可能覆盖服务、模型和凭据。")}</small>}
         {tool === "claude" && selected?.custom && <small className="dim">{t("第三方 Claude 服务未进行推理连通性验证。")}</small>}
-        {selected?.hasKey && <button type="button" className="workdir-row model-row" aria-haspopup="dialog" aria-label={t("{tool} 模型：{model}，点击更换", { tool: meta.name, model: model || t(selected.custom ? "客户端默认" : "未设置") })} disabled={disabled} onClick={() => openModel(tool, selected)}>
-          <span className="config-label">{t("模型")}</span><span className="config-value"><strong className="mono" title={model}>{model || t(selected.custom ? "客户端默认" : "未设置")}</strong>{tool === "codex" && <span className="model-extra">{t("思考深度")} · {effortLabel(selected.codexEffort || "medium")}</span>}</span><span className="service-switch">{t("更换")}</span>
-        </button>}
 
         </div>
 
@@ -886,15 +912,10 @@ export function Launcher(props: {
   }
 
   return <div className="launcher-pages" hidden={props.page === "keys"}>
-    {(props.page === "claude" || props.page === "codex") && <>
-      {/* 还没有密钥：登录导入为主（还能同步密钥状态），手动粘贴为辅（不登录也能用全部功能） */}
-      {consented(props.page) && props.profiles.length === 0 && !TOOL_IDS.some(adoptable) && <div className="onboard"><span className="onboard-mark"><UiIcon name="key"/></span>
-        <div><strong>{t("先添加一把密钥")}</strong><span>{t("登录导入 zAI 密钥，或直接粘贴任意服务的 API Key。")}</span></div>
-        <button className="primary with-icon" disabled={disabled} onClick={props.onLoginImport}>{t("登录导入")}<UiIcon name="arrow"/></button>
-        <button className="ghost" disabled={disabled} onClick={props.onManualKey}>{t("手动粘贴 Key")}</button>
-        </div>}
-      {toolPage(props.page)}
-    </>}
+    {props.page === "welcome" && <section className="tool-hero connection-guide"><h1>{t("选择工具")}</h1>
+      {TOOL_IDS.map(tool => { const { name, Icon } = TOOLS[tool]; return <button key={tool} onClick={() => props.onPage(tool)}><Icon className={"brand brand-" + tool}/><strong>{name}</strong><UiIcon name="arrow"/></button>; })}
+    </section>}
+    {(props.page === "claude" || props.page === "codex") && toolPage(props.page)}
     {props.page === "settings" && <div className="settings-page">
       <div className="launch-heading"><h1>{t("设置")}</h1><button className="icon-round" disabled={disabled} title={refreshing ? t("检测中…") : t("重新检测程序")} aria-label={t("重新检测程序")} onClick={refresh}><UiIcon name="refresh"/></button></div>
 
@@ -963,6 +984,10 @@ export function Launcher(props: {
       <ClientSetup key={setupTarget} onVersion={value => clientVersions.set(setupTarget, scan?.installations.find(i => i.target === setupTarget)?.path, value)} target={setupTarget} installation={scan?.installations.find(i => i.target === setupTarget)} refresh={refresh} chooseProgram={() => chooseProgram(setupTarget)} onInstalled={async () => { const p = await api.loadLauncherPreferences(); prefsRef.current = p; setPrefs(p); setPathDrafts(p.customPaths); }} onDone={() => setSetupTarget(null)} disabled={disabled} />
     </PickerDialog>}
     {error ? <div className="toast err" role="alert">{t(error)}</div>
-      : flash && (props.page === "claude" || props.page === "codex") && <div className={`toast ${flash.kind} flash`} role={flash.kind === "err" ? "alert" : "status"} onClick={() => setFlash(null)}>{flash.text}</div>}
+      : flash && (props.page === "claude" || props.page === "codex") && <div key={flash.id} className={`toast ${flash.kind} flash`} role={flash.kind === "err" ? "alert" : "status"} onClick={() => setFlash(null)} style={{ "--flash-ms": `${flashMs}ms` } as React.CSSProperties}>
+        <span className="flash-text">{flash.text}</span>
+        {flash.undo && <button type="button" className="flash-undo" disabled={props.busy} onClick={event => { event.stopPropagation(); const undo = flash.undo!; setFlash(null); undo(); }}>{t("撤销")}</button>}
+        <span className="flash-timer" aria-hidden="true" onAnimationEnd={() => setFlash(null)}/>
+      </div>}
   </div>;
 }

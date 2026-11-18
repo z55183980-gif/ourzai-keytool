@@ -42,11 +42,12 @@ export interface InstallProgress { phase: "resolve" | "download" | "relay" | "ve
 export interface InstallOutcome { installed: boolean; message: string }
 export const runClientInstall = async (target: import("./types").LaunchTarget, progress: (value: InstallProgress) => void): Promise<InstallOutcome> => {
   if (DEV && S) {
-    for (const phase of ["resolve", "download", "relay", "verify"] as const) {
-      progress({ phase, downloaded: phase === "relay" ? 1048576 : 0, total: phase === "relay" ? 2097152 : null });
-      await new Promise(resolve => setTimeout(resolve, 350));
-    }
-    return { installed: false, message: "预览模式：已模拟下载安装，未执行真实安装。" };
+    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const total = 2097152;
+    progress({ phase: "resolve", downloaded: 0, total: null }); await pause(500);
+    for (let step = 1; step <= 10; step++) { progress({ phase: "download", downloaded: total * step / 10, total }); await pause(180); }
+    progress({ phase: "verify", downloaded: 0, total: null }); await pause(600);
+    return { installed: false, message: "" };
   }
   const onProgress = new Channel<InstallProgress>(); onProgress.onmessage = progress;
   return invoke("install_client", { target, onProgress });
@@ -160,7 +161,7 @@ export const gatewayAdoptToken = (profileId: string, tokenId: number): Promise<s
 /** 一次登录批量导入多把 Key，每把存成一条 */
 export const gatewayImportTokens = (tokenIds: number[]): Promise<ImportResult> =>
   DEV && S
-    ? Promise.resolve({ created: ["Codex 专用"], updated: ["主号"], unchanged: [], skipped: [] })
+    ? Promise.resolve(mock.mockImportTokens(S, tokenIds))
     : invoke<ImportResult>("gateway_import_tokens", { tokenIds });
 
 export const listBackups = (): Promise<BackupEntry[]> =>

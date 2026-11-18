@@ -189,8 +189,6 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 .workdir-row .ui-icon { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
 .workdir-row .service-switch { margin-left: auto; }
 /* 模型一行：和工作目录同样式；模型名用等宽字，Codex 后面跟思考深度 */
-.model-row strong.mono { font-size: 12.5px; max-width: 55%; }
-.model-row .model-extra { font-size: 12px; color: var(--dim); white-space: nowrap; }
 
 /* 更换模型弹窗：输入框 + 按厂商分组的可用模型列表（在弹窗里滚动） */
 .model-effort { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--dim); }
@@ -481,7 +479,6 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 /* 使用服务：卡片里直接列出全部选项（不再收进「切换」弹窗）。
    单选圆点 = 启动时用哪一项；绿色「当前生效」= 配置文件里现在实际用的是哪一项 */
 .service-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px 4px; }
-.launcher-pages .service-manage { padding: 2px 4px; font-size: 12px; }
 .service-list.inline { gap: 0; padding: 4px 6px 6px; max-height: 360px; overflow-y: auto; overscroll-behavior: contain; }
 .service-row { display: flex; align-items: center; gap: 8px; padding-right: 8px; border: 1px solid transparent; border-radius: 12px; transition: background .15s, border-color .15s; }
 .service-row + .service-row { margin-top: 2px; }
@@ -494,11 +491,21 @@ body { background: radial-gradient(ellipse at 0 0, #e5eafa, transparent 48%), #f
 .service-icon .ui-icon, .service-icon .brand { width: 16px; height: 16px; }
 .service-row.is-current .service-icon { color: var(--accent); }
 .service-list.inline .service-text strong { font-size: 14px; }
+.service-list.inline .service-meta { align-items: center; }
+.service-list.inline .service-model { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; padding: 2px 0; font: inherit; }
 .service-list.inline .service-meta span { font-size: 12px; }
-.launcher-pages .service-edit { flex-shrink: 0; height: auto; min-height: 0; padding: 4px 11px; font-size: 12px; }
-.service-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.launcher-pages .service-actions button { min-height: 28px; padding: 4px 9px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
-.service-list.inline .service-current { font-size: 10px; padding: 2px 5px; }
+.service-title { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; }
+.service-title strong { min-width: 0; max-width: 100%; }
+.launcher-pages .service-title .service-key-title { font: inherit; padding: 0; color: inherit; text-align: start; white-space: normal; overflow-wrap: anywhere; }
+.launcher-pages .service-title .service-key-title:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+.service-key-menu { position: fixed; z-index: 200; display: grid; min-width: 112px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel, white); box-shadow: 0 6px 20px #18243830; }
+.service-key-menu button { padding: 6px 12px; border: 0; border-radius: 6px; font-size: 13px; text-align: start; background: transparent; }
+.service-key-menu button:is(:hover, :focus-visible):not(:disabled) { color: var(--accent); background: rgba(63,102,240,.08); }
+.service-key-menu button:disabled { pointer-events: none; }
+.service-row:has(.service-key-title) button:disabled { pointer-events: none; }
+.launcher-pages .service-enable { flex: 0 0 auto; inline-size: 4.8em; min-height: 28px; padding: 4px 6px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
+.service-list.inline .service-current { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 2px 6px; }
+.service-current .ui-icon { width: 11px; height: 11px; }
 .launch-configuration > .service-list.inline + button { border-top: 1px solid rgba(40,57,90,.07); }
 
 /* 启动按钮在卡片顶部（紧跟启动方式），下面的提示居中跟在说明后面 */

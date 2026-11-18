@@ -177,7 +177,7 @@ export function ClientSetup({ target, installation, refresh, chooseProgram, onIn
       </details> : null}
       {installStarted && <button className="setup-docs" disabled={locked} onClick={() => { setInstallStarted(false); setNotice(""); }}>{t("安装未成功？允许重新运行")}</button>}
     </>}
-    {progress && <div className="setup-progress" role="status"><p>{t(progress.phase === "resolve" ? "正在获取安装信息…" : progress.phase === "verify" ? "正在校验安装包…" : progress.phase === "install" ? "正在安装，请留意系统提示…" : progress.phase === "relay" ? "正在重试下载…" : "正在下载安装包…")}</p><progress max={progress.total ?? 1} value={progress.total ? progress.downloaded : undefined}/>{progress.total && <span>{Math.min(100, Math.round(progress.downloaded / progress.total * 100))}%</span>}</div>}
+    {progress && <div className="setup-progress" role="status"><p>{t(progress.phase === "resolve" ? "正在获取安装信息…" : progress.phase === "verify" ? "正在校验安装包…" : progress.phase === "install" ? "正在安装，请留意系统提示…" : progress.phase === "relay" ? "正在通过中继下载…" : "正在下载安装包…")}</p><progress max={progress.total ?? 1} value={progress.total ? progress.downloaded : undefined}/>{progress.total && <span>{Math.min(100, Math.round(progress.downloaded / progress.total * 100))}%</span>}</div>}
     {(missing || failed) && <div className="setup-recovery">
       <p>{t(failed ? "检测出错，请重试；这不代表程序未安装。" : "已安装？请选择程序路径。")}</p>
       {missing && <button disabled={locked} onClick={() => void run("path", async () => {

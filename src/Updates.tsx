@@ -19,7 +19,7 @@ export function useUpdates() {
 }
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
-  useLang();
+  const lang = useLang();
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   busyRef.current = busy;
@@ -61,7 +61,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   return <Context.Provider value={{ state, controller, busy, setBusy, ignoreProxy: proxyChoice, setIgnoreProxy }}>
     {!state.policy || state.policy.required ? <main className="update-screen">
       <section className="update-gate" aria-labelledby="update-title">
-        <div className="update-language">{LANGS.map(lang => <button key={lang.id} onClick={() => setLang(lang.id)}>{lang.label}</button>)}</div>
+        <label className="update-language">
+          <span>{t("语言")}</span>
+          <select aria-label={t("界面语言")} value={lang} onChange={event => setLang(event.target.value as typeof LANGS[number]["id"])}>
+            {LANGS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        </label>
         <h1 id="update-title">{t(state.policy?.required ? "需要更新才能继续" : state.error ? "无法检查版本" : "正在检查版本…")}</h1>
         {state.policy?.required && <p>{t("当前 {current}，请更新至 {minimum} 或更高版本。", { current: state.policy.currentVersion, minimum: state.policy.config.min_client_version })}</p>}
         <UpdatePanel mandatory />
