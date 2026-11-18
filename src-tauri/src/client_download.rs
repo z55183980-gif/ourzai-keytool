@@ -1,4 +1,5 @@
-//! All four installation paths share bounded downloads and automatic relay fallback.
+//! All four installation paths share bounded downloads.
+//! Route rule: if the official host is reachable, download directly; if not, use the relay. Decided once per host, no switching mid-download.
 use crate::{
     error::{AppError, Result},
     launcher::Target,
@@ -9,7 +10,9 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     io::{Read, Write},
+    collections::HashMap,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::ipc::Channel;
@@ -73,6 +76,37 @@ fn relay_url(url: &str) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url)
     )
 }
+/// How long a reachability probe waits: no successful response in this window counts as unreachable
+const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long the per-host route decision is kept; one install / version check reuses it instead of probing again
+const ROUTE_TTL: Duration = Duration::from_secs(10 * 60);
+static ROUTES: OnceLock<Mutex<HashMap<String, (bool, Instant)>>> = OnceLock::new();
+
+/// Can the official address be reached: a successful response within a few seconds is enough; the body is not read
+async fn reachable(url: &str) -> bool {
+    let Ok(client) = client() else { return false };
+    matches!(
+        tokio::time::timeout(PROBE_TIMEOUT, client.get(url).header("Range", "bytes=0-0").send()).await,
+        Ok(Ok(response)) if response.status().is_success()
+    )
+}
+/// Pick a route for one address: official direct if reachable, otherwise the given relay address. Returns (address, via relay)
+async fn pick(url: &str, relay: String) -> (String, bool) {
+    if reachable(url).await { (url.to_string(), false) } else { (relay, true) }
+}
+/// Same as `pick`, but the result is cached per official host
+async fn route(url: &str) -> (String, bool) {
+    let host = reqwest::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    let routes = ROUTES.get_or_init(|| Mutex::new(HashMap::new()));
+    let cached = routes.lock().ok().and_then(|map| map.get(&host).filter(|(_, at)| at.elapsed() < ROUTE_TTL).map(|(relay, _)| *relay));
+    if let Some(relay) = cached {
+        return if relay { (relay_url(url), true) } else { (url.to_string(), false) };
+    }
+    let (endpoint, relay) = pick(url, relay_url(url)).await;
+    if let Ok(mut map) = routes.lock() { map.insert(host, (relay, Instant::now())); }
+    (endpoint, relay)
+}
+
 fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
@@ -99,7 +133,7 @@ async fn transfer(
     let phase = if relay { "relay" } else { "download" };
     report(channel, phase, 0, None);
     let mut response = tokio::time::timeout(
-        Duration::from_secs(if relay { 35 } else { 12 }),
+        Duration::from_secs(35),
         client()?.get(url).send(),
     )
     .await
@@ -113,15 +147,14 @@ async fn transfer(
         return Err(err("安装文件超过大小限制"));
     }
     let mut file = File::create(destination)?;
-    let (mut downloaded, mut window_bytes) = (0, 0);
-    let mut window = Instant::now();
+    let mut downloaded = 0;
     let mut last_report = Instant::now();
     loop {
         if started.elapsed() > Duration::from_secs(30 * 60) {
             return Err(err("下载时间过长，请稍后重试。"));
         }
         let chunk = tokio::time::timeout(
-            Duration::from_secs(if relay { 25 } else { 8 }),
+            Duration::from_secs(25),
             response.chunk(),
         )
         .await
@@ -131,7 +164,6 @@ async fn transfer(
             break;
         };
         downloaded += chunk.len() as u64;
-        window_bytes += chunk.len() as u64;
         if downloaded > max {
             return Err(err("安装文件超过大小限制"));
         }
@@ -139,13 +171,6 @@ async fn transfer(
         if last_report.elapsed() >= Duration::from_millis(250) {
             report(channel, phase, downloaded, total);
             last_report = Instant::now();
-        }
-        if window.elapsed() >= Duration::from_secs(15) {
-            if !relay && window_bytes / window.elapsed().as_secs().max(1) < 64 * 1024 {
-                return Err(err("官方下载持续低速"));
-            }
-            window = Instant::now();
-            window_bytes = 0;
         }
     }
     if downloaded == 0 || total.is_some_and(|n| n != downloaded) {
@@ -165,23 +190,21 @@ async fn download(
     if !allowed(&reqwest::Url::parse(url).map_err(|_| err("安装资源地址无效"))?) {
         return Err(err("安装资源不属于受支持的官方来源"));
     }
-    download_attempts(url, &relay_url(url), destination, max, channel).await
+    let (endpoint, relay) = route(url).await;
+    download_from(&endpoint, relay, destination, max, channel).await
 }
-async fn download_attempts(
-    url: &str,
-    fallback: &str,
+async fn download_from(
+    endpoint: &str,
+    relay: bool,
     destination: &Path,
     max: u64,
     channel: &Channel<Progress>,
 ) -> Result<()> {
-    let result = match transfer(url, destination, max, false, channel).await {
-        Ok(()) => Ok(()),
-        Err(_) => transfer(fallback, destination, max, true, channel).await,
-    };
+    let result = transfer(endpoint, destination, max, relay, channel).await;
     if result.is_err() {
         let _ = fs::remove_file(destination);
     }
-    result.map_err(|_| err("官方下载与备用下载均未完成，请稍后重试。"))
+    result.map_err(|e| err(format!("{}未完成：{}", if relay { "中继下载" } else { "官方下载" }, e)))
 }
 async fn metadata(url: &str, dir: &Path, channel: &Channel<Progress>) -> Result<Vec<u8>> {
     let path = dir.join("metadata.json");
@@ -210,8 +233,8 @@ async fn range_bytes(url: &str, range: &str) -> Result<Vec<u8>> {
     if !allowed(&reqwest::Url::parse(url).map_err(|_| err("安装资源地址无效"))?) {
         return Err(err("安装资源地址无效"));
     }
-    for endpoint in [url.to_string(), relay_url(url)] {
-        let attempt = tokio::time::timeout(Duration::from_secs(20), async {
+    let (endpoint, _) = route(url).await;
+    let attempt = tokio::time::timeout(Duration::from_secs(20), async {
             let mut response = client()?
                 .get(endpoint)
                 .header("Range", range)
@@ -243,11 +266,10 @@ async fn range_bytes(url: &str, range: &str) -> Result<Vec<u8>> {
             Ok(bytes)
         })
         .await;
-        if let Ok(Ok(bytes)) = attempt {
-            return Ok(bytes);
-        }
+    match attempt {
+        Ok(Ok(bytes)) => Ok(bytes),
+        _ => Err(err("无法查询安装包版本，请稍后重试。")),
     }
-    Err(err("无法查询安装包版本，请稍后重试。"))
 }
 fn u16_at(bytes: &[u8], index: usize) -> Result<usize> {
     Ok(u16::from_le_bytes(
@@ -323,26 +345,22 @@ fn manifest_entry(tail: &[u8]) -> Result<(usize, usize, usize)> {
 }
 async fn msix_version(url: &str) -> Result<String> {
     // End ranges use a fixed offset after discovering total size from Content-Range.
+    let (endpoint, _) = route(url).await;
     let mut size = None;
-    for endpoint in [url.to_string(), relay_url(url)] {
-        let response = tokio::time::timeout(
-            Duration::from_secs(15),
-            client()?.get(endpoint).header("Range", "bytes=0-0").send(),
-        )
-        .await;
-        if let Ok(Ok(response)) = response {
-            if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-                size = response
-                    .headers()
-                    .get("content-range")
-                    .and_then(|h| h.to_str().ok())
-                    .and_then(content_range)
-                    .filter(|(start, end, _)| *start == 0 && *end == 0)
-                    .map(|(_, _, size)| size);
-                if size.is_some() {
-                    break;
-                }
-            }
+    if let Ok(Ok(response)) = tokio::time::timeout(
+        Duration::from_secs(15),
+        client()?.get(endpoint).header("Range", "bytes=0-0").send(),
+    )
+    .await
+    {
+        if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            size = response
+                .headers()
+                .get("content-range")
+                .and_then(|h| h.to_str().ok())
+                .and_then(content_range)
+                .filter(|(start, end, _)| *start == 0 && *end == 0)
+                .map(|(_, _, size)| size);
         }
     }
     let size = size
@@ -1183,33 +1201,34 @@ mod tests {
         (url, handle)
     }
     #[test]
-    fn official_first_and_incomplete_download_falls_back() {
+    fn reachable_official_downloads_directly_otherwise_relay() {
         tauri::async_runtime::block_on(async {
-            let dir = std::env::temp_dir().join(format!("keytool-relay-{}", std::process::id()));
+            // Official responds: go direct
+            let (url, handle) = serve_once("200 OK", "x", 1);
+            assert_eq!(pick(&url, "relay".into()).await, (url.clone(), false));
+            handle.join().unwrap();
+            // Official unreachable or returning an error: use the relay
+            assert_eq!(pick("http://127.0.0.1:1", "relay".into()).await, ("relay".into(), true));
+            let (url, handle) = serve_once("503 Unavailable", "", 0);
+            assert_eq!(pick(&url, "relay".into()).await, ("relay".into(), true));
+            handle.join().unwrap();
+        });
+    }
+    #[test]
+    fn incomplete_download_fails_and_leaves_no_file() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!("keytool-route-{}", std::process::id()));
             fs::create_dir_all(&dir).unwrap();
             let path = dir.join("payload");
             let channel = Channel::new(|_| Ok(()));
-            let (url, handle) = serve_once("200 OK", "official", 8);
-            download_attempts(&url, "http://127.0.0.1:1", &path, 100, &channel)
-                .await
-                .unwrap();
+            let (url, handle) = serve_once("200 OK", "complete", 8);
+            download_from(&url, false, &path, 100, &channel).await.unwrap();
             handle.join().unwrap();
-            assert_eq!(fs::read(&path).unwrap(), b"official");
-            let (url, first) = serve_once("200 OK", "partial", 20);
-            let (fallback, second) = serve_once("200 OK", "complete", 8);
-            download_attempts(&url, &fallback, &path, 100, &channel)
-                .await
-                .unwrap();
-            first.join().unwrap();
-            second.join().unwrap();
             assert_eq!(fs::read(&path).unwrap(), b"complete");
-            let (url, first) = serve_once("503 Unavailable", "", 0);
-            let (fallback, second) = serve_once("200 OK", "partial", 30);
-            assert!(download_attempts(&url, &fallback, &path, 100, &channel)
-                .await
-                .is_err());
-            first.join().unwrap();
-            second.join().unwrap();
+            let (url, handle) = serve_once("200 OK", "partial", 30);
+            let error = download_from(&url, true, &path, 100, &channel).await.unwrap_err();
+            handle.join().unwrap();
+            assert!(error.to_string().contains("中继下载未完成"));
             assert!(!path.exists());
             fs::remove_dir_all(dir).unwrap();
         });

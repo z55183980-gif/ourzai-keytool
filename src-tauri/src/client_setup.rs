@@ -205,7 +205,7 @@ static CHECK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub async fn check_client_version(target: Target, ignore_proxy: bool, check_latest: Option<bool>) -> Result<ClientVersion> {
     crate::updates::ensure_supported()?;
     let _guard = CHECK.lock().await;
-    let _ = ignore_proxy; // Installation metadata uses the same official-first/relay policy as downloads.
+    let _ = ignore_proxy; // Installation metadata uses the same route as downloads: official if reachable, otherwise the relay.
     let (current, path) = crate::commands::blocking(move || launcher::installed_version(target)).await?
         .ok_or_else(|| AppError::Other("未找到客户端，请先安装或设置程序路径".into()))?;
     if !check_latest.unwrap_or(true) {
