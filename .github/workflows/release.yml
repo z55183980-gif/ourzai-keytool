@@ -55,6 +55,9 @@ jobs:
           $prefix = Join-Path $env:RUNNER_TEMP 'compat-clients'
           npm install --no-audit --no-fund --prefix $prefix '@openai/codex@${{ matrix.codex }}' '@anthropic-ai/claude-code@${{ matrix.claude }}'
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # 先编译测试夹具：缓存失效（如版本号变化）时冷编译会超过脚本里 cargo run 的 180 秒时限
+          cargo build --locked --example client_fixture --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python scripts/real-client-e2e.py --codex "$prefix/node_modules/.bin/codex.ps1" --claude "$prefix/node_modules/.bin/claude.ps1"
   build:
     needs: cli-compatibility
