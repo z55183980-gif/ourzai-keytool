@@ -852,7 +852,7 @@ fn install(target: Target, asset: &Asset, path: &Path, dir: &Path) -> Result<Out
     }
     #[cfg(windows)]
     {
-        return install_windows_desktop(target, path, dir, &asset.version);
+        install_windows_desktop(target, path, dir, &asset.version)
     }
     #[cfg(target_os = "macos")]
     {

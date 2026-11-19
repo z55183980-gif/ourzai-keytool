@@ -848,7 +848,7 @@ env_key = "RELAY_KEY"
     fn saved_keys_are_not_offered_for_adoption() {
         let live = LiveCredential { base_url: "https://relay.example".into(), key: "relay-key-123456".into(), model: String::new() };
         assert_eq!(live_summary(Some(&live), false), (Some(crate::state::mask("relay-key-123456")), true));
-        assert_eq!(live_summary(Some(&live), true).1, false);
+        assert!(!live_summary(Some(&live), true).1);
         assert_eq!(live_summary(None, false), (None, false));
     }
 }
