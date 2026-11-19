@@ -729,6 +729,15 @@ export const DICT: Record<string, [string, string]> = {
   "只能重启桌面版客户端": ["只能重新啟動桌面版用戶端", "Only desktop clients can be restarted"],
   "预览模式：未重启真实程序": ["預覽模式：未重新啟動真實程式", "Preview mode: no real app was restarted"],
 
+  "切换到第三方推理": ["切換到第三方推理", "Switch to third-party inference"],
+  "一键切换": ["一鍵切換", "Switch now"],
+  "Claude 桌面版将退出，改用本工具写入的网关和密钥后重新打开。": ["Claude 桌面版將結束，改用本工具寫入的閘道和密鑰後重新開啟。", "Claude desktop will quit and reopen using the gateway and key written by this tool."],
+  "进行中的对话或任务会被中断。你的 Claude.ai 账号不受影响，之后可在桌面版里切回官方登录；这次改动也可以撤销。": ["進行中的對話或任務會被中斷。你的 Claude.ai 帳號不受影響，之後可在桌面版中切回官方登入；這次改動也可以撤銷。", "Conversations or tasks in progress will be interrupted. Your Claude.ai account is unaffected; you can switch back to Claude.ai sign-in in Claude desktop later, and this change can be undone."],
+  "正在切换…": ["正在切換…", "Switching…"],
+  "切换并重启": ["切換並重新啟動", "Switch and restart"],
+  "Claude 桌面版已切换到第三方推理并重新打开": ["Claude 桌面版已切換到第三方推理並重新開啟", "Claude desktop switched to third-party inference and reopened"],
+  "预览模式：未切换真实程序": ["預覽模式：未切換真實程式", "Preview mode: no real app was switched"],
+
   // —— 一键修复与简化后的工具页 ——
   "分析问题": ["分析問題", "Analyze the problem"],
   "备份并写入配置": ["備份並寫入設定", "Back up and write config"],

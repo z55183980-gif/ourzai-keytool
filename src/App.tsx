@@ -17,7 +17,7 @@ import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import type { ImportDialog } from "./ConnectionGuide";
 import { LoginPanel } from "./LoginPanel";
 import { WelcomeGuide } from "./WelcomeGuide";
-import { RestartDialog, mergePrompt, type RestartPrompt } from "./RestartDialog";
+import { RestartDialog, SwitchModeDialog, mergePrompt, type RestartPrompt } from "./RestartDialog";
 import type { ApplyKey, ApplyOutcome } from "./ConnectStep";
 import { ONBOARDED_KEY, needsOnboarding } from "./onboarding";
 import logoUrl from "./assets/logo.png";
@@ -536,7 +536,25 @@ export default function App() {
     return api.aiDiagnose({ tool, mode, service, model, profileId, note, lang: getLang(), baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
   };
   /** 体检 / AI 修复的动作。写入了配置时返回备份号（可撤销），其余（跳转页面、没写入）返回 null */
-  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<string | null> => {
+  /** Claude 桌面版选了官方登录：弹窗确认后切到第三方推理并重启；返回是否切换成功 */
+  const [switchAsk, setSwitchAsk] = useState<{ resolve: (done: boolean) => void } | null>(null);
+  const switchThirdParty = () => new Promise<boolean>(resolve => setSwitchAsk({ resolve }));
+  const runSwitch = async (): Promise<boolean> => {
+    log("cmd", t("切换到第三方推理") + " · Claude " + t("桌面版"));
+    try {
+      const r = await api.switchClaudeDesktopToThirdParty();
+      const backupId = r.backupId;
+      log("ok", t(r.message), backupId ? { group: "undo", batch: nextBatch(), actions: [{ label: t("撤销这次改动"), run: () => void restore(backupId) }] } : undefined);
+      return true;
+    } catch (e) {
+      setToast({ kind: "err", text: String(e) });
+      return false;
+    } finally {
+      await reload(baseUrl);
+    }
+  };
+  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings" | "thirdparty", mode: LaunchMode = "cli"): Promise<string | null> => {
+    if (fix === "thirdparty") { await switchThirdParty(); return null; }
     if (fix === "rebuild" && tool === "claude" && mode === "desktop") {
       setToast({ kind: "err", text: t("桌面版不支持备份重建，请手动修复配置") });
       return null;
@@ -691,10 +709,14 @@ export default function App() {
     }
     return outcome;
   };
-  const restartDialog = restartPrompt && <RestartDialog prompt={restartPrompt} onClose={() => setRestartPrompt(null)} log={(kind, text) => setToast({ kind: kind === "info" ? "ok" : kind, text })} />;
+  const restartDialog = <>
+    {restartPrompt && <RestartDialog prompt={restartPrompt} onClose={() => setRestartPrompt(null)} log={(kind, text) => setToast({ kind: kind === "info" ? "ok" : kind, text })} />}
+    {switchAsk && <SwitchModeDialog onCancel={() => { switchAsk.resolve(false); setSwitchAsk(null); }}
+      onConfirm={async () => { const done = await runSwitch(); switchAsk.resolve(done); setSwitchAsk(null); }} />}
+  </>;
   if (onboarding) return <>
     <WelcomeGuide onFinish={tools => { finishOnboarding(); setPage(tools[0]); }} onSkip={finishOnboarding}
-      connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth }} />
+      connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth, switchThirdParty }} />
     {restartDialog}
   </>;
 

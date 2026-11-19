@@ -60,3 +60,21 @@ export function RestartDialog({ prompt, onClose, log }: {
     </div>
   </div>;
 }
+
+/** 把 Claude 桌面版从官方登录切到第三方推理：会关闭它再重新打开，先让用户确认 */
+export function SwitchModeDialog({ onConfirm, onCancel }: { onConfirm: () => Promise<void>; onCancel: () => void }) {
+  const [working, setWorking] = useState(false);
+  return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget && !working) onCancel(); }}>
+    <div className="modal restart-dialog" role="alertdialog" aria-modal="true" aria-labelledby="switch-title" aria-describedby="switch-body">
+      <div className="modal-hd"><strong id="switch-title">{t("切换到第三方推理")}</strong></div>
+      <div className="modal-body" id="switch-body">
+        <p>{t("Claude 桌面版将退出，改用本工具写入的网关和密钥后重新打开。")}</p>
+        <p className="restart-note">{t("进行中的对话或任务会被中断。你的 Claude.ai 账号不受影响，之后可在桌面版里切回官方登录；这次改动也可以撤销。")}</p>
+      </div>
+      <div className="restart-actions">
+        <button type="button" className="ghost" disabled={working} onClick={onCancel}>{t("取消")}</button>
+        <button type="button" className="primary" disabled={working} autoFocus onClick={async () => { setWorking(true); await onConfirm(); }}>{t(working ? "正在切换…" : "切换并重启")}</button>
+      </div>
+    </div>
+  </div>;
+}

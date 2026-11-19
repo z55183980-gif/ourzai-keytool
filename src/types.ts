@@ -210,7 +210,8 @@ export interface ApplyResult {
 }
 
 /** 体检（health_check）的问题行；fix 只会是已有的动作 */
-export type HealthFix = "rewrite" | "rebuild" | "keys" | "settings" | "model" | "none";
+/** thirdparty：把 Claude 桌面版从官方登录切到第三方推理并重启 */
+export type HealthFix = "rewrite" | "rebuild" | "keys" | "settings" | "model" | "thirdparty" | "none";
 export interface HealthIssue { id: string; level: "error" | "warn"; text: string; fix: HealthFix }
 /** mode：Claude 桌面版与 CLI 读两份配置，体检按启动方式分开查 */
 export interface HealthRequest { tool: ToolId; service: string; model: string; baseUrl: string; ignoreProxy: boolean; opusModel: string; sonnetModel: string; haikuModel: string; mode: LaunchMode }

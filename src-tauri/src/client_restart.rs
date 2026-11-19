@@ -165,6 +165,52 @@ pub fn restart(target: Target) -> Result<LaunchReceipt> {
     crate::launcher::launch(LaunchRequest { target, directory: String::new(), service: None })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwitchOutcome {
+    /// 改动前的备份；本来就是第三方模式时为空
+    pub backup_id: Option<String>,
+    pub message: String,
+}
+
+/// 用户选了 Claude.ai 官方登录时，一键切到第三方推理：退出桌面版 → 备份并改选择 → 重新打开。
+/// 必须先退出：运行中的桌面版会回写这个文件，先改会被它覆盖。
+#[tauri::command]
+pub async fn switch_claude_desktop_to_third_party() -> Result<SwitchOutcome> {
+    tauri::async_runtime::spawn_blocking(switch_to_third_party)
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+fn switch_to_third_party() -> Result<SwitchOutcome> {
+    use crate::claude_desktop;
+    let target = Target::ClaudeDesktop;
+    let backup_id = {
+        let _guard = crate::backup::lock()?;
+        let path = claude_desktop::app_config_path()?;
+        // 先确认能改（格式损坏就不动桌面版），再退出
+        claude_desktop::with_third_party_mode(crate::atomic::read_text_optional(&path)?.as_deref())?;
+        if running(target) {
+            stop(target)?;
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        // 退出时桌面版可能刚回写过，重新读一次
+        let before = crate::atomic::read_text_optional(&path)?;
+        let after = claude_desktop::with_third_party_mode(before.as_deref())?;
+        if claude_desktop::chose_official_login(before.as_deref()) || before.is_none() {
+            let id = crate::backup::create_for_paths(std::slice::from_ref(&path))?;
+            crate::atomic::write_atomic(&path, &after)?;
+            Some(id)
+        } else {
+            None
+        }
+    };
+    crate::launcher::launch(LaunchRequest { target, directory: String::new(), service: None }).map_err(|e| {
+        AppError::Other(format!("已切换到第三方推理，但重新打开 Claude 桌面版失败，请手动打开：{e}"))
+    })?;
+    Ok(SwitchOutcome { backup_id, message: "Claude 桌面版已切换到第三方推理并重新打开".into() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

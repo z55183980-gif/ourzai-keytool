@@ -73,6 +73,15 @@ pub fn chose_official_login(app_config: Option<&str>) -> bool {
         .is_some_and(|v| v.get(KEY_DEPLOYMENT_MODE).and_then(Value::as_str) == Some("1p"))
 }
 
+/// 把应用配置改成第三方模式（和桌面版自己「切换到第三方推理」写的一样），其他项原样保留
+pub fn with_third_party_mode(app_config: Option<&str>) -> Result<String> {
+    let mut m = parse_object(app_config).map_err(|e| {
+        AppError::JsonParse(format!("Claude 桌面版的应用配置有格式问题：{e}。原文件没有被改动"))
+    })?;
+    m.insert(KEY_DEPLOYMENT_MODE.into(), Value::from("3p"));
+    Ok(serde_json::to_string_pretty(&Value::Object(m))?)
+}
+
 pub fn official_login_chosen() -> bool {
     app_config_path()
         .ok()
@@ -397,6 +406,17 @@ mod tests {
         assert!(!chose_official_login(Some(r#"{"preferences":{}}"#)));
         assert!(!chose_official_login(Some("{oops")));
         assert!(!chose_official_login(None));
+    }
+
+    #[test]
+    fn switching_to_third_party_keeps_other_settings() {
+        let out = with_third_party_mode(Some(r#"{"deploymentMode":"1p","preferences":{"a":1},"coworkUserFilesPath":"x"}"#)).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v, serde_json::json!({ "deploymentMode": "3p", "preferences": { "a": 1 }, "coworkUserFilesPath": "x" }));
+        assert!(!chose_official_login(Some(&out)));
+        assert_eq!(serde_json::from_str::<Value>(&with_third_party_mode(None).unwrap()).unwrap(), serde_json::json!({ "deploymentMode": "3p" }));
+        assert!(with_third_party_mode(Some("{oops")).is_err());
+        assert!(with_third_party_mode(Some("[1]")).is_err());
     }
 
     #[test]

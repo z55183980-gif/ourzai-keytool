@@ -20,6 +20,8 @@ export type GuideConnect = {
   /** 记下同意读取两个工具的配置，并读回本机配置 */
   readEnvironment: () => Promise<Environment | null>;
   checkHealth: (tool: ToolId, service: string, mode: LaunchMode) => Promise<HealthIssue[]>;
+  /** Claude 桌面版选了官方登录：确认后切到第三方推理并重启；切换成功返回 true */
+  switchThirdParty: () => Promise<boolean>;
 };
 const TOOL_NAME: Record<ToolId, string> = { claude: "Claude Code", codex: "Codex" };
 
@@ -93,7 +95,7 @@ export function WelcomeGuide({ onFinish, onSkip, connect }: { onFinish: (tools: 
         <InstallStep tools={ALL_TOOLS} scan={scan} scanFailed={check.scanFailed} versionOf={check.versionOf} afterInstall={check.afterInstall} busy={setWorking}/>
         {issues.length > 0 && <div className="check-issues">
           <h2>{t("需要注意")}</h2>
-          <ul>{issues.map(issue => <li key={`${issue.tool}-${issue.text}`} className={issue.level}><UiIcon name="alert"/><span>{issue.tool && !issue.text.includes(issue.tool === "claude" ? "Claude" : "Codex") && <strong>{TOOL_NAME[issue.tool]}</strong>}{issue.text}</span></li>)}</ul>
+          <ul>{issues.map(issue => <li key={`${issue.tool}-${issue.text}`} className={issue.level}><UiIcon name="alert"/><span>{issue.tool && !issue.text.includes(issue.tool === "claude" ? "Claude" : "Codex") && <strong>{TOOL_NAME[issue.tool]}</strong>}{issue.text}{issue.fix === "thirdparty" && <button type="button" className="check-fix" disabled={working} onClick={async () => { if (await connect.switchThirdParty()) void check.run(); }}>{t("一键切换")}</button>}</span></li>)}</ul>
           <p>{t("可以稍后在工具页修复。")}</p>
         </div>}
       </>}

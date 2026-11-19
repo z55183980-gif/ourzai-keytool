@@ -32,6 +32,8 @@ pub enum Fix {
     Model,
     /// 去设置页
     Settings,
+    /// 把 Claude 桌面版从官方登录切到第三方推理并重启（switch_claude_desktop_to_third_party）
+    ThirdParty,
     None,
 }
 
@@ -205,7 +207,7 @@ pub fn check_claude_desktop(
     }
     // 选了官方登录时重开也不会生效，D4 的「重新打开」提示没有意义
     if official_chosen && c.provider.as_deref() == Some("gateway") {
-        out.push(issue("D6", Level::Warn, crate::claude_desktop::OFFICIAL_LOGIN_CHOSEN, Fix::None));
+        out.push(issue("D6", Level::Warn, crate::claude_desktop::OFFICIAL_LOGIN_CHOSEN, Fix::ThirdParty));
     } else if restart_pending {
         out.push(issue(
             "D4",

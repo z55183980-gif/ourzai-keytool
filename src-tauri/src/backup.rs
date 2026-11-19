@@ -55,12 +55,15 @@ fn targets(codex: bool, claude: bool) -> Result<Vec<(String, PathBuf)>> {
 
 const DESKTOP_CONFIG: &str = "claude-desktop.json";
 const DESKTOP_META: &str = "claude-desktop-meta.json";
+/// 桌面版自己的应用配置（官方登录 / 第三方模式的选择记在这里）
+const DESKTOP_APP: &str = "claude-desktop-app.json";
 
 /// Resolve trusted locations without reading another client's configuration.
 fn all_targets() -> Result<Vec<(String, PathBuf)>> {
     let mut files = targets(true, true)?;
     files.push(("codex-ownership.json".into(), paths::ownership_path()?));
     files.push((DESKTOP_META.into(), crate::claude_desktop::meta_path()?));
+    files.push((DESKTOP_APP.into(), crate::claude_desktop::app_config_path()?));
     Ok(files)
 }
 

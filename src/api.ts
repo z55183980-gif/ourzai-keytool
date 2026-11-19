@@ -87,6 +87,10 @@ export const runningDesktopClients = (targets: import("./types").LaunchTarget[])
 export const restartDesktopClient = (target: import("./types").LaunchTarget): Promise<{ message: string }> => DEV && S
   ? Promise.resolve({ message: "预览模式：未重启真实程序" }) : invoke("restart_desktop_client", { target });
 
+/** Claude 桌面版选了官方登录时，切到第三方推理：退出 → 备份并改选择 → 重新打开 */
+export const switchClaudeDesktopToThirdParty = (): Promise<{ backupId: string | null; message: string }> => DEV && S
+  ? Promise.resolve({ backupId: null, message: "预览模式：未切换真实程序" }) : invoke("switch_claude_desktop_to_third_party");
+
 /** 读取本机配置。tools：用户同意读取的工具，另一个返回「未读取」占位 */
 export const scanEnvironment = (baseUrl?: string, tools?: (ToolId | "claude-cli" | "claude-desktop")[], preferredProfileId?: string): Promise<Environment> =>
   DEV && S
