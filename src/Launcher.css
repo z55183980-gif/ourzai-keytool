@@ -115,7 +115,7 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 .eyebrow { font-size: 11px; letter-spacing: 1px; color: #7c879d; margin-bottom: 7px; }
 /* 这几页里的普通按钮：胶囊形玻璃 */
 .launcher-pages button, .key-actions > button { border-radius: 999px; }
-.launcher-pages button:not(.primary):not(.site):not(.service-option):not(.service-pick):not(.model-option):not(.console-btn):not(.lang-switch button), .key-actions > button:not(.primary) { background: var(--glass-strong); border-color: var(--glass-edge); box-shadow: inset 0 1px 0 #fff, 0 0 0 .5px rgba(24, 36, 80, .08), 0 2px 8px rgba(36, 52, 110, .08); }
+.launcher-pages button:not(.primary):not(.site):not(.service-option):not(.service-pick):not(.model-option):not(.effort-opt):not(.console-btn):not(.lang-switch button), .key-actions > button:not(.primary) { background: var(--glass-strong); border-color: var(--glass-edge); box-shadow: inset 0 1px 0 #fff, 0 0 0 .5px rgba(24, 36, 80, .08), 0 2px 8px rgba(36, 52, 110, .08); }
 .icon-round { width: 38px; height: 38px; padding: 0 !important; display: grid; place-items: center; }
 
 /* 工具页面：顶部启动区 + 下面几节（服务、工作目录、状态），页面自然往下延伸 */
@@ -191,8 +191,19 @@ button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px
 /* 模型一行：和工作目录同样式；模型名用等宽字，Codex 后面跟思考深度 */
 
 /* 更换模型弹窗：输入框 + 按厂商分组的可用模型列表（在弹窗里滚动） */
-.model-effort { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--dim); }
-.model-effort select { flex: 0 1 220px; border-radius: 12px; }
+/* 换模型弹窗：模型名 / 思考深度 / 可用模型三段，各带小标题 */
+.model-dialog .picker-body { gap: 18px; scrollbar-width: thin; scrollbar-color: rgba(24, 36, 80, .22) transparent; }
+.model-field { display: flex; flex-direction: column; gap: 7px; }
+.model-field-label { padding: 0 2px; font-size: 12px; font-weight: 600; color: var(--dim); }
+.effort-seg { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 14px; background: rgba(24, 36, 80, .06); }
+.effort-seg button.effort-opt { min-height: 34px; padding: 6px 2px; border: 0; border-radius: 11px; background: transparent; box-shadow: none; color: #4a5568; font: inherit; font-size: 13px; white-space: nowrap; cursor: pointer; transition: background-color 150ms, color 150ms; }
+.effort-seg button.effort-opt:hover:not(:disabled) { background: rgba(255, 255, 255, .6); }
+.effort-seg button.effort-opt[aria-checked="true"] { background: #fff; color: #075e50; font-weight: 600; box-shadow: 0 1px 3px rgba(24, 36, 80, .14), 0 0 0 .5px rgba(24, 36, 80, .08); }
+.effort-seg button.effort-opt:disabled { cursor: default; opacity: .6; }
+.effort-hint { padding: 0 2px; font-size: 12px; color: var(--dim); }
+.model-option > .ui-icon { margin-left: auto; width: 15px; height: 15px; flex-shrink: 0; }
+.model-dialog .picker-ft button.primary { width: 100%; }
+.model-dialog .picker-ft button.primary:disabled { opacity: .5; }
 .model-list { display: flex; flex-direction: column; gap: 10px; }
 .model-list > .settings-note { margin: 0; }
 .model-group { display: flex; flex-direction: column; gap: 2px; }

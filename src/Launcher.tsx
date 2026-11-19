@@ -14,7 +14,7 @@ import { UiIcon } from "./UiIcon";
 import { ServiceKeyRow } from "./ServiceKeyRow";
 import { OutputConsole, type LogAction, type LogKind, type LogLine } from "./OutputConsole";
 import { RepairCard, type RepairView } from "./RepairCard";
-import { EFFORTS, groupByFamily, supports } from "./modelFamilies";
+import { EFFORTS, effortLabel, groupByFamily, supports } from "./modelFamilies";
 import { LANGS, setLang, t, useLang } from "./i18n";
 import { UpdatePanel, useUpdates } from "./Updates";
 import { profileTitle, supportsTool, type AskOption, type Diagnosis, type Environment, type HealthFix, type HealthIssue, type LauncherPreferences, type LauncherScan, type LaunchMode, type LaunchTarget, type Profile, type ToolId, type ModelInfo } from "./types";
@@ -177,6 +177,8 @@ export function Launcher(props: {
   });
   /** 「更换模型」弹窗里正在编辑的值 */
   const [modelEdit, setModelEdit] = useState<{ model: string; effort: string }>({ model: "", effort: "medium" });
+  /** 正在换模型的那把密钥（不一定是使用中的那把） */
+  const [modelProfileId, setModelProfileId] = useState<string | null>(null);
   /** 可用模型列表，按密钥缓存，同一把密钥不重复获取 */
   const [modelList, setModelList] = useState<{ profileId: string; models: ModelInfo[] | null; error?: string } | null>(null);
   /** 设置页：正在修改哪个程序的路径（弹窗） */
@@ -297,6 +299,7 @@ export function Launcher(props: {
   const modelOf = (tool: ToolId, p: Profile) => props.modelFor(tool, p);
   const openModel = (tool: ToolId, p: Profile) => {
     setModelEdit({ model: modelOf(tool, p), effort: p.codexEffort || "medium" });
+    setModelProfileId(p.id);
     setPicker("model");
     if (modelList?.profileId === p.id && modelList.models && !modelList.error) return;
     setModelList({ profileId: p.id, models: null });
@@ -843,7 +846,7 @@ export function Launcher(props: {
             const unavailable = !profile.hasKey ? t("缺少密钥，请到密钥页补上")
               : !supportsTool(profile, tool) ? t("没有填 {tool} 地址", { tool: meta.cli }) : null;
             const model = modelOf(tool, profile) || t("默认模型");
-            const details = unavailable ? metaLine([unavailable]) : selected?.id !== profile.id ? metaLine([profile.maskedKey, model], true)
+            const details = unavailable ? metaLine([unavailable])
               : metaLine([profile.maskedKey], true, <button type="button" className="site service-model" disabled={disabled} aria-haspopup="dialog"
                   aria-label={t("{tool} 模型：{model}，点击更换", { tool: meta.name, model })} title={model} onClick={() => openModel(tool, profile)}>
                   <span>{model}</span><b aria-hidden="true">▾</b>
@@ -870,8 +873,12 @@ export function Launcher(props: {
         <button type="button" className="workdir-pick" disabled={disabled} onClick={() => { setPicker(null); void chooseFolder(); }}><UiIcon name="folder"/>{t("选择其他文件夹…")}</button>
       </PickerDialog>}
 
-      {picker === "model" && selected?.hasKey && (() => {
-        const list = modelList?.profileId === selected.id ? modelList : null;
+      {picker === "model" && (() => {
+        const target = props.profiles.find(p => p.id === modelProfileId && p.hasKey);
+        if (!target) return null;
+        // 只有使用中的那把换完模型要立即写入配置；其他密钥只记下，切换到它时再写入
+        const inUse = selected?.id === target.id;
+        const list = modelList?.profileId === target.id ? modelList : null;
         // 本工具常用的那一家排在最前面
         const first = tool === "claude" ? "Claude" : "GPT";
         // 按网关目录标出这个工具用不了的模型（只在别的接口上有渠道），放到各组最后并置灰
@@ -881,21 +888,30 @@ export function Launcher(props: {
           .map(g => ({ ...g, items: [...g.items].sort((a, b) => Number(fits(b)) - Number(fits(a))) }))
           .sort((a, b) => Number(b.items.some(fits)) - Number(a.items.some(fits)) || Number(b.name === first) - Number(a.name === first));
         const value = modelEdit.model.trim();
-        const unchanged = value === modelOf(tool, selected) && (tool !== "codex" || modelEdit.effort === (selected.codexEffort || "medium"));
+        const unchanged = value === modelOf(tool, target) && (tool !== "codex" || modelEdit.effort === (target.codexEffort || "medium"));
         return <PickerDialog title={t("{tool} 使用的模型", { tool: meta.name })} onClose={() => setPicker(null)} className="model-dialog"
           footer={<button className="primary sm" disabled={disabled || !value || unchanged} onClick={async () => {
-            const ok = await props.onSaveModel(selected.id, tool === "codex" ? { codexModel: value, codexEffort: modelEdit.effort } : { claudeModel: value }, { tool, mode });
+            const ok = await props.onSaveModel(target.id, tool === "codex" ? { codexModel: value, codexEffort: modelEdit.effort } : { claudeModel: value }, inUse ? { tool, mode } : undefined);
             if (ok) setPicker(null);
           }}>{t("保存")}</button>}>
-          <p className="settings-note">{t("为「{name}」选择或填写 {tool} 模型。", { name: selected.name, tool: meta.name })}</p>
-          <label className="sr-only" htmlFor="model-input">{t("模型名")}</label>
-          <input id="model-input" className="path-input mono" value={modelEdit.model} placeholder={t("填写模型名")} spellCheck={false} autoComplete="off" disabled={disabled}
-            onChange={e => setModelEdit(m => ({ ...m, model: e.target.value }))}/>
-          {tool === "codex" && <label className="model-effort"><span>{t("思考深度")}</span>
-            <select value={modelEdit.effort} disabled={disabled} onChange={e => setModelEdit(m => ({ ...m, effort: e.target.value }))}>
-              {EFFORTS.map(x => <option key={x.value} value={x.value}>{t(x.label)}</option>)}
-            </select></label>}
-          <div className="model-list" role="radiogroup" aria-label={t("「{name}」可用的模型", { name: selected.name })}>
+          <p className="settings-note">{t("为「{name}」选择或填写 {tool} 模型。", { name: target.name, tool: meta.name })}</p>
+          <div className="model-field">
+            <label className="model-field-label" htmlFor="model-input">{t("模型")}</label>
+            <input id="model-input" className="path-input mono" value={modelEdit.model} placeholder={t("填写模型名")} spellCheck={false} autoComplete="off" disabled={disabled}
+              onChange={e => setModelEdit(m => ({ ...m, model: e.target.value }))}/>
+          </div>
+          {tool === "codex" && <div className="model-field">
+            <span className="model-field-label" id="effort-label">{t("思考深度")}</span>
+            {/* 分段选择代替原生下拉框（系统下拉菜单无法统一样式）；说明只显示选中那一档的 */}
+            <div className="effort-seg" role="radiogroup" aria-labelledby="effort-label">
+              {EFFORTS.map(x => <button key={x.value} type="button" role="radio" aria-checked={modelEdit.effort === x.value} className="effort-opt" disabled={disabled}
+                title={t(x.label)} onClick={() => setModelEdit(m => ({ ...m, effort: x.value }))}>{effortLabel(x.value)}</button>)}
+            </div>
+            {(() => { const hint = t(EFFORTS.find(x => x.value === modelEdit.effort)?.label ?? "").split(" — ")[1]; return hint && <small className="effort-hint">{hint}</small>; })()}
+          </div>}
+          <div className="model-field">
+          <span className="model-field-label">{t("可用模型")}</span>
+          <div className="model-list" role="radiogroup" aria-label={t("「{name}」可用的模型", { name: target.name })}>
             {!list?.models ? <p className="settings-note">{t("正在加载可用模型…")}</p>
               : list.error ? <p className="settings-note warn-text">{t("模型加载失败：{error}。可手动填写。", { error: list.error })}</p>
               : !groups.length ? <p className="settings-note">{t("暂无模型，请手动填写。")}</p>
@@ -903,8 +919,9 @@ export function Launcher(props: {
                 <div className="model-group-label">{t(g.name)}</div>
                 {g.items.map(m => <button key={m} type="button" role="radio" aria-checked={m === value} className="model-option mono" disabled={disabled || !fits(m)}
                   title={fits(m) ? undefined : t("不支持 {tool} 使用的接口", { tool: meta.name })}
-                  onClick={() => setModelEdit(x => ({ ...x, model: m }))}>{m}{!fits(m) && <span className="model-tag">{t("不支持 {tool}", { tool: meta.name })}</span>}</button>)}
+                  onClick={() => setModelEdit(x => ({ ...x, model: m }))}>{m}{!fits(m) ? <span className="model-tag">{t("不支持 {tool}", { tool: meta.name })}</span> : m === value && <UiIcon name="check"/>}</button>)}
               </div>)}
+          </div>
           </div>
         </PickerDialog>;
       })()}

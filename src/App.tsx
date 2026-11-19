@@ -468,9 +468,9 @@ export default function App() {
     const usesApi = tool === "claude" && service !== "official" && (service !== "current" || !!env?.claudeDesktop?.currentBaseUrl);
     if (usesApi && await api.claudeDesktopOfficialLogin().catch(() => false)) {
       const ok = await confirm({
-        title: t("用 API 启动 Claude 桌面版"),
-        body: t("Claude 桌面版当前使用 Claude.ai 官方账号登录。用 API 启动需要切换到第三方推理，会关闭并重新打开 Claude 桌面版。"),
-        note: t("进行中的对话或任务会被中断。你的 Claude.ai 账号不受影响，之后可在桌面版里切回官方登录；这次改动也可以撤销。"),
+        title: t("切换为 API 启动？"),
+        body: t("Claude 桌面版当前使用官方账号登录，切换后将重启。"),
+        note: t("进行中的对话会被中断，可随时切回官方登录。"),
         confirmLabel: t("切换并启动"),
       });
       if (!ok) return { message: t("已取消启动") };
@@ -481,10 +481,10 @@ export default function App() {
     }
     if ((await api.runningDesktopClients([req.target]).catch(() => [] as LaunchTarget[])).length) {
       const ok = await confirm({
-        title: t("{name} 正在运行", { name }),
-        body: t("运行中的 {name} 不会重新读取配置。要按当前选择的服务启动，需要关闭并重新打开它。", { name }),
-        note: t("重启会关闭它的所有窗口和后台进程，进行中的对话或任务会被中断。"),
-        confirmLabel: t("重启"),
+        title: t("重启 {names}？", { names: name }),
+        body: t("{name} 正在运行，重启后才会使用所选服务。", { name }),
+        note: t("进行中的对话会被中断。"),
+        confirmLabel: t("立即重启"),
       });
       if (!ok) return { message: t("已取消启动") };
       return api.restartDesktopClient(req.target);

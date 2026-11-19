@@ -34,10 +34,10 @@ export function RestartDialog({ prompt, onClose, log }: {
     }
     onClose();
   };
-  return <ConfirmDialog title={t("需要重启客户端")}
-    body={t("{names} 正在运行，它只在启动时读取配置，重启后新配置才会生效。", { names })}
-    note={t("重启会关闭它的所有窗口和后台进程，进行中的对话或任务会被中断。")}
-    cancelLabel={t("稍后自己重启")} confirmLabel={t("立即重启")} workingLabel={t("正在重启…")}
+  return <ConfirmDialog title={t("重启 {names}？", { names })}
+    body={t("新配置需重启后生效。")}
+    note={t("进行中的对话会被中断。")}
+    cancelLabel={t("稍后")} confirmLabel={t("立即重启")} workingLabel={t("正在重启…")}
     onCancel={onClose} onConfirm={restart} />;
 }
 
@@ -48,15 +48,15 @@ export function ConfirmDialog({ title, body, note, cancelLabel, confirmLabel, wo
 }) {
   const [working, setWorking] = useState(false);
   return <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget && !working) onCancel(); }}>
-    <div className="modal restart-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
-      <div className="modal-hd"><strong id="confirm-title">{title}</strong></div>
-      <div className="modal-body" id="confirm-body">
+    <div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+      <h2 id="confirm-title">{title}</h2>
+      <div id="confirm-body">
         <p>{body}</p>
-        {note && <p className="restart-note">{note}</p>}
+        {note && <p className="confirm-note">{note}</p>}
       </div>
-      <div className="restart-actions">
-        <button type="button" className="ghost" disabled={working} onClick={onCancel}>{cancelLabel}</button>
-        <button type="button" className="primary" disabled={working} autoFocus onClick={async () => { setWorking(true); try { await onConfirm(); } finally { setWorking(false); } }}>{working ? workingLabel : confirmLabel}</button>
+      <div className="confirm-actions">
+        <button type="button" className="confirm-btn" disabled={working} onClick={onCancel}>{cancelLabel}</button>
+        <button type="button" className="confirm-btn confirm-primary" disabled={working} autoFocus onClick={async () => { setWorking(true); try { await onConfirm(); } finally { setWorking(false); } }}>{working ? workingLabel : confirmLabel}</button>
       </div>
     </div>
   </div>;
