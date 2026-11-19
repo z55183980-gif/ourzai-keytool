@@ -430,6 +430,7 @@ export function mockApply(req: ApplyRequest): ApplyResult {
     wroteCodexAuth: req.configureCodex,
     wroteClaudeSettings: req.configureClaude,
     wroteClaudeDesktop: !!req.configureClaudeDesktop,
+    officialLoginChosen: !!req.configureClaudeDesktop,
     paths: [
       ...(req.configureCodex
         ? [`${HOME_CODEX}\\config.toml`, `${HOME_CODEX}\\auth.json`]

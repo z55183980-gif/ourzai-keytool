@@ -9,6 +9,7 @@ import type {
   LaunchMode,
   ToolId,
   KeyStatus,
+  LaunchTarget,
   ModelInfo,
 } from "./types";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -16,6 +17,7 @@ import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import type { ImportDialog } from "./ConnectionGuide";
 import { LoginPanel } from "./LoginPanel";
 import { WelcomeGuide } from "./WelcomeGuide";
+import { RestartDialog, mergePrompt, type RestartPrompt } from "./RestartDialog";
 import type { ApplyKey, ApplyOutcome } from "./ConnectStep";
 import { ONBOARDED_KEY, needsOnboarding } from "./onboarding";
 import logoUrl from "./assets/logo.png";
@@ -197,11 +199,24 @@ export default function App() {
   /** 最近一条错误提示：引导页没有输出面板，写入失败时拿它告诉用户原因 */
   const lastError = useRef("");
   const setToast = useCallback((m: { kind: "ok" | "err"; text: string } | null) => { if (m) { const text = t(m.text.replace(/^Error:\s*/, "")); if (m.kind === "err") lastError.current = text; log(m.kind, text); } }, [log]);
+  /** 写入后的弹窗：运行中的桌面版要重启才读新配置；Claude 桌面版选了官方登录时说明不会生效 */
+  const [restartPrompt, setRestartPrompt] = useState<RestartPrompt | null>(null);
+  const promptRestart = useCallback(async (targets: LaunchTarget[], officialLogin = false) => {
+    // 选了官方登录时重启也不会用这份配置，Claude 桌面版不进重启列表，只说明原因
+    const wanted = officialLogin ? targets.filter(x => x !== "claude-desktop") : targets;
+    const running = wanted.length ? await api.runningDesktopClients(wanted).catch(() => [] as LaunchTarget[]) : [];
+    if (running.length || officialLogin) setRestartPrompt(prev => mergePrompt(prev, { targets: running, officialLogin }));
+  }, []);
   /** 写入配置的结果：写了哪些文件、备份号（可撤销）、警告 */
   const logResult = (r: ApplyResult) => {
     log("ok", t("配置已写入，改动前已备份（{id}）", { id: r.backupId }), { group: "undo", batch: nextBatch(), actions: [{ label: t("撤销这次改动"), run: () => void restore(r.backupId) }] });
     r.paths.forEach(path => log("path", path));
     r.warnings.forEach(w => log("warn", t(w)));
+    const targets: LaunchTarget[] = [
+      ...(r.wroteClaudeDesktop ? ["claude-desktop" as const] : []),
+      ...(r.wroteCodexConfig || r.wroteCodexAuth ? ["codex-desktop" as const] : []),
+    ];
+    void promptRestart(targets, !!r.wroteClaudeDesktop && !!r.officialLoginChosen);
   };
 
   const codexKeepsAuth = env?.codex.authState === "OfficialLogin" || env?.codex.authState === "ExternalStore";
@@ -540,6 +555,8 @@ export default function App() {
       setLogs(l => l.map(x => x.group === "undo" ? { ...x, actions: undefined } : x));
       setToast({ kind: "ok", text: t("已还原到 {id} 那一次的配置", { id }) });
       await reload(baseUrl);
+      // 还原可能改了任一客户端的配置：运行中的桌面版同样要重启
+      void promptRestart(["claude-desktop", "codex-desktop"]);
       return true;
     } catch (e) {
       setToast({ kind: "err", text: String(e) });
@@ -674,8 +691,12 @@ export default function App() {
     }
     return outcome;
   };
-  if (onboarding) return <WelcomeGuide onFinish={tools => { finishOnboarding(); setPage(tools[0]); }} onSkip={finishOnboarding}
-    connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth }} />;
+  const restartDialog = restartPrompt && <RestartDialog prompt={restartPrompt} onClose={() => setRestartPrompt(null)} log={(kind, text) => setToast({ kind: kind === "info" ? "ok" : kind, text })} />;
+  if (onboarding) return <>
+    <WelcomeGuide onFinish={tools => { finishOnboarding(); setPage(tools[0]); }} onSkip={finishOnboarding}
+      connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth }} />
+    {restartDialog}
+  </>;
 
   return (
     <div className="launcher-app">
@@ -880,6 +901,7 @@ export default function App() {
       )}
       </main>
       </div>
+      {restartDialog}
     </div>
   );
 }

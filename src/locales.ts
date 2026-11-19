@@ -710,6 +710,24 @@ export const DICT: Record<string, [string, string]> = {
   "Claude 桌面版服务地址不对": ["Claude 桌面版服務位址不正確", "Claude desktop's service URL is wrong"],
   "Claude 桌面版用了其他认证方式，可能不生效": ["Claude 桌面版使用了其他認證方式，可能不會生效", "Claude desktop uses another sign-in method; the key may not take effect"],
   "Claude 桌面版还没重新打开，新配置尚未生效：请完全退出（包括托盘图标）后再打开": ["Claude 桌面版尚未重新開啟，新設定仍未生效：請完全結束（包括系統匣圖示）後再開啟", "Claude desktop hasn't been reopened, so the new config isn't active yet: quit it completely (including the tray icon) and reopen it"],
+  "Claude 桌面版当前选的是 Claude.ai 官方登录，不会使用第三方推理配置：请在桌面版里切换到第三方推理后重新打开": ["Claude 桌面版目前選用的是 Claude.ai 官方登入，不會使用第三方推理設定：請在桌面版中切換到第三方推理後重新開啟", "Claude desktop is set to sign in with Claude.ai, so it won't use the third-party inference config: switch it to third-party inference in Claude desktop and reopen it"],
+
+  // —— 写入后重启桌面客户端 ——
+  "Claude 桌面版": ["Claude 桌面版", "Claude desktop"],
+  "Codex 桌面版": ["Codex 桌面版", "Codex desktop"],
+  "需要重启客户端": ["需要重新啟動用戶端", "Restart required"],
+  "配置暂不会生效": ["設定暫時不會生效", "The config won't take effect yet"],
+  "{names} 正在运行，它只在启动时读取配置，重启后新配置才会生效。": ["{names} 正在執行，它只在啟動時讀取設定，重新啟動後新設定才會生效。", "{names} is running and only reads its config at startup. Restart it for the new config to take effect."],
+  "重启会关闭它的所有窗口和后台进程，进行中的对话或任务会被中断。": ["重新啟動會關閉它的所有視窗和背景程序，進行中的對話或任務會被中斷。", "Restarting closes all its windows and background processes; conversations or tasks in progress will be interrupted."],
+  "稍后自己重启": ["稍後自行重新啟動", "I'll restart later"],
+  "立即重启": ["立即重新啟動", "Restart now"],
+  "正在重启…": ["正在重新啟動…", "Restarting…"],
+  "知道了": ["知道了", "Got it"],
+  "正在重启 {name}": ["正在重新啟動 {name}", "Restarting {name}"],
+  "{name} 已重新打开，新配置已生效": ["{name} 已重新開啟，新設定已生效", "{name} has been reopened with the new config"],
+  "没能退出客户端，请手动完全退出（包括托盘图标）后再打开": ["未能結束用戶端，請手動完全結束（包括系統匣圖示）後再開啟", "Couldn't quit the client. Quit it completely (including the tray icon) and reopen it"],
+  "只能重启桌面版客户端": ["只能重新啟動桌面版用戶端", "Only desktop clients can be restarted"],
+  "预览模式：未重启真实程序": ["預覽模式：未重新啟動真實程式", "Preview mode: no real app was restarted"],
 
   // —— 一键修复与简化后的工具页 ——
   "分析问题": ["分析問題", "Analyze the problem"],

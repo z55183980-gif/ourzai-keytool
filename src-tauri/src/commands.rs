@@ -658,6 +658,8 @@ pub struct ApplyResult {
     pub wrote_codex_auth: bool,
     pub wrote_claude_settings: bool,
     pub wrote_claude_desktop: bool,
+    /// 写了 Claude 桌面版，但用户在桌面版里选的是官方登录：配置不会生效，前端弹窗说明
+    pub official_login_chosen: bool,
     pub paths: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -893,11 +895,8 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
             }
             out.wrote_claude_desktop = true;
             out.paths.push(path.to_string_lossy().to_string());
-            if claude_desktop::running() {
-                out.warnings.push(
-                    "Claude 桌面版正在运行，它不会重读配置：请完全退出（包括托盘图标）后重新打开，新配置才生效".into(),
-                );
-            }
+            // 重启提示和官方登录提示由前端弹窗处理（写入后查询运行中的桌面版）
+            out.official_login_chosen = claude_desktop::official_login_chosen();
         }
     }
 
@@ -1261,7 +1260,13 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
                             .is_some_and(|k| !claude_desktop::is_sealed(&k))
                         && claude_desktop::running();
                     (
-                        health::check_claude_desktop(text.as_deref(), &anthropic_base, service, restart_pending),
+                        health::check_claude_desktop(
+                            text.as_deref(),
+                            &anthropic_base,
+                            service,
+                            restart_pending,
+                            claude_desktop::official_login_chosen(),
+                        ),
                         health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed, current| {
                             let config = path.to_string_lossy();
                             let entry = state::DesktopEntry { path: &config, base_url: current.base_url.as_deref(), models: &current.models };

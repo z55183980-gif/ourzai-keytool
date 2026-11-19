@@ -365,6 +365,12 @@ fn scan_claude_desktop(expected: &[String], gateway: &str, preferred: Option<&st
             "桌面版已加密保存密钥，无法确认是哪一把；保存配置会重新写入所选密钥。".into();
     }
     assessment.finish(managed_by_us);
+    // 配置本身没问题，但桌面版按官方登录启动，不会用它：状态照旧，说明换成这个原因
+    if current.as_ref().is_some_and(|c| c.provider.as_deref() == Some("gateway"))
+        && claude_desktop::official_login_chosen()
+    {
+        assessment.message = claude_desktop::OFFICIAL_LOGIN_CHOSEN.into();
+    }
     Ok(ClaudeEnv {
         configured_models: current.as_ref().map(|entry| entry.models.clone()).unwrap_or_default(),
         home_exists: home.is_dir(),

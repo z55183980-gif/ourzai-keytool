@@ -750,7 +750,7 @@ fn cli_receipt(req: &LaunchRequest) -> LaunchReceipt {
     });
     LaunchReceipt { message: if project { "已请求启动；检测到项目级设置，实际服务和模型请在终端确认。" } else { "已请求启动，请在终端确认。" }.into() }
 }
-fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
+pub(crate) fn launch(req: LaunchRequest) -> Result<LaunchReceipt> {
     crate::updates::ensure_supported()?;
     let _guard = LAUNCH_LOCK
         .try_lock()

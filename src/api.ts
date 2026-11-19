@@ -80,6 +80,13 @@ export const validateLaunch = (req: LaunchRequest): Promise<void> => DEV && S ? 
 export const launchClient = (req: LaunchRequest): Promise<{ message: string }> => DEV && S
   ? Promise.resolve({ message: "预览模式：未启动真实程序" }) : invoke("launch_client", { req });
 
+/** 这几个桌面客户端里正在运行的（它们只在启动时读配置） */
+export const runningDesktopClients = (targets: import("./types").LaunchTarget[]): Promise<import("./types").LaunchTarget[]> => DEV && S
+  ? Promise.resolve(targets) : invoke("running_desktop_clients", { targets });
+/** 退出（含后台进程）并重新打开桌面客户端 */
+export const restartDesktopClient = (target: import("./types").LaunchTarget): Promise<{ message: string }> => DEV && S
+  ? Promise.resolve({ message: "预览模式：未重启真实程序" }) : invoke("restart_desktop_client", { target });
+
 /** 读取本机配置。tools：用户同意读取的工具，另一个返回「未读取」占位 */
 export const scanEnvironment = (baseUrl?: string, tools?: (ToolId | "claude-cli" | "claude-desktop")[], preferredProfileId?: string): Promise<Environment> =>
   DEV && S

@@ -203,6 +203,8 @@ export interface ApplyResult {
   wroteCodexAuth: boolean;
   wroteClaudeSettings: boolean;
   wroteClaudeDesktop?: boolean;
+  /** 写了 Claude 桌面版，但它选的是 Claude.ai 官方登录：这份配置不会被使用 */
+  officialLoginChosen?: boolean;
   paths: string[];
   warnings: string[];
 }

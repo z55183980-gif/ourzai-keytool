@@ -54,6 +54,32 @@ pub fn meta_path() -> Result<PathBuf> {
     Ok(library_dir()?.join("_meta.json"))
 }
 
+/// 桌面版自己的应用配置（和 configLibrary 同在第三方数据目录下）。
+/// 用户在桌面版里选「用 Claude.ai 登录」时，它把 `deploymentMode: "1p"` 记在这里，
+/// 之后即使第三方推理配置齐全也按官方登录启动。
+pub fn app_config_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("claude_desktop_config.json"))
+}
+
+pub const KEY_DEPLOYMENT_MODE: &str = "deploymentMode";
+pub const OFFICIAL_LOGIN_CHOSEN: &str =
+    "Claude 桌面版当前选的是 Claude.ai 官方登录，不会使用第三方推理配置：请在桌面版里切换到第三方推理后重新打开";
+
+/// 应用配置里是否记着用户选了官方登录（和桌面版一样，只认 "1p"，读不出来按没选）。
+/// 组织下发的策略可以强制第三方模式而忽略这个选择，本工具不读策略，按个人设备处理。
+pub fn chose_official_login(app_config: Option<&str>) -> bool {
+    app_config
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .is_some_and(|v| v.get(KEY_DEPLOYMENT_MODE).and_then(Value::as_str) == Some("1p"))
+}
+
+pub fn official_login_chosen() -> bool {
+    app_config_path()
+        .ok()
+        .and_then(|p| crate::atomic::read_text_optional(&p).ok().flatten())
+        .is_some_and(|t| chose_official_login(Some(&t)))
+}
+
 pub(crate) fn valid_id(id: &str) -> bool {
     id.len() == 36
         && id
@@ -362,6 +388,15 @@ mod tests {
         assert_eq!(v, serde_json::json!({ "builtinBrowserEnabled": true }));
         assert_eq!(revert(Some(&out)).unwrap(), None);
         assert_eq!(revert(None).unwrap(), None);
+    }
+
+    #[test]
+    fn official_login_choice_is_only_an_explicit_1p() {
+        assert!(chose_official_login(Some(r#"{"deploymentMode":"1p","preferences":{}}"#)));
+        assert!(!chose_official_login(Some(r#"{"deploymentMode":"3p"}"#)));
+        assert!(!chose_official_login(Some(r#"{"preferences":{}}"#)));
+        assert!(!chose_official_login(Some("{oops")));
+        assert!(!chose_official_login(None));
     }
 
     #[test]

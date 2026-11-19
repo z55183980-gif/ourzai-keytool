@@ -174,11 +174,13 @@ pub fn check_claude(text: Option<&str>, anthropic_base: &str, service: Service) 
 /// Claude 桌面版的第三方推理配置（它不读 settings.json，规则单独一套）。
 /// `restart_pending`：配置里还是明文密钥且桌面版正在运行 —— 桌面版启动时会把明文加密，
 /// 还是明文就说明写入后它没重新打开过，运行中的那个还在用旧配置。
+/// `official_chosen`：用户在桌面版里选了 Claude.ai 官方登录，第三方推理配置不会被使用。
 pub fn check_claude_desktop(
     text: Option<&str>,
     anthropic_base: &str,
     service: Service,
     restart_pending: bool,
+    official_chosen: bool,
 ) -> Vec<Issue> {
     let mut out = Vec::new();
     let Some(text) = text.filter(|t| !t.trim().is_empty()) else {
@@ -201,7 +203,10 @@ pub fn check_claude_desktop(
             out.push(issue("D3", Level::Warn, "Claude 桌面版用了其他认证方式，可能不生效", Fix::Rewrite));
         }
     }
-    if restart_pending {
+    // 选了官方登录时重开也不会生效，D4 的「重新打开」提示没有意义
+    if official_chosen && c.provider.as_deref() == Some("gateway") {
+        out.push(issue("D6", Level::Warn, crate::claude_desktop::OFFICIAL_LOGIN_CHOSEN, Fix::None));
+    } else if restart_pending {
         out.push(issue(
             "D4",
             Level::Warn,
@@ -463,17 +468,22 @@ mod tests {
     #[test]
     fn desktop_rules() {
         let ok = desktop("gateway", CLAUDE_BASE, r#","inferenceCredentialKind":"static""#);
-        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, false).is_empty());
-        assert!(check_claude_desktop(None, CLAUDE_BASE, Service::Current, false).is_empty());
-        assert_eq!(ids(&check_claude_desktop(Some("{x"), CLAUDE_BASE, Service::Zai, false)), ["D1"]);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, false, false).is_empty());
+        assert!(check_claude_desktop(None, CLAUDE_BASE, Service::Current, false, false).is_empty());
+        assert_eq!(ids(&check_claude_desktop(Some("{x"), CLAUDE_BASE, Service::Zai, false, false)), ["D1"]);
         let v1 = desktop("gateway", "https://api.ourzai.com/v1", "");
-        assert_eq!(ids(&check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Current, false)), ["D2"]);
+        assert_eq!(ids(&check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Current, false, false)), ["D2"]);
         // 选了 zAI 密钥时启动会重写，地址问题不提前报
-        assert!(check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Zai, false).is_empty());
+        assert!(check_claude_desktop(Some(&v1), CLAUDE_BASE, Service::Zai, false, false).is_empty());
         let helper = desktop("gateway", CLAUDE_BASE, r#","inferenceCredentialHelper":"x""#);
-        assert_eq!(ids(&check_claude_desktop(Some(&helper), CLAUDE_BASE, Service::Current, false)), ["D3"]);
-        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, true)), ["D4"]);
-        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, true).is_empty());
+        assert_eq!(ids(&check_claude_desktop(Some(&helper), CLAUDE_BASE, Service::Current, false, false)), ["D3"]);
+        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, true, false)), ["D4"]);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, true, false).is_empty());
+        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, true, true)), ["D6"]);
+        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, false, true)), ["D6"]);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, false, true).is_empty());
+        let bedrock = desktop("bedrock", CLAUDE_BASE, "");
+        assert!(check_claude_desktop(Some(&bedrock), CLAUDE_BASE, Service::Zai, false, true).is_empty());
     }
 
     #[test]

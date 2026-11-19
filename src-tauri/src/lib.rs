@@ -4,6 +4,7 @@ pub mod backup;
 pub mod brand;
 pub mod claude_config;
 pub mod claude_desktop;
+pub mod client_restart;
 pub mod codex_auth;
 pub mod codex_config;
 mod codex_ownership;
@@ -192,6 +193,8 @@ pub fn run() {
             launcher::scan_launchers,
             launcher::validate_launch,
             launcher::launch_client,
+            client_restart::running_desktop_clients,
+            client_restart::restart_desktop_client,
             launcher::validate_project_directory,
             tray_menu::take_tray_action,
             client_setup::client_install_guide,
