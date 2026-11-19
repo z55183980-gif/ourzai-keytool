@@ -8,7 +8,6 @@ import { InstallStep, installedKinds } from "./InstallStep";
 import { CheckPanel, useEnvCheck } from "./EnvCheck";
 import { ConnectStep, type ApplyKey } from "./ConnectStep";
 import type { ImportDialog } from "./ConnectionGuide";
-import wordmarkUrl from "./assets/wordmark.png";
 import "./WelcomeGuide.css";
 
 const STEPS = ["welcome", "install", "connect"] as const;
@@ -56,7 +55,7 @@ export function WelcomeGuide({ onFinish, onSkip, connect }: { onFinish: (tools: 
   return <div className="onboarding">
     <header className="onboarding-top">
       {step === "welcome" || connectDone
-        ? <img className="onboarding-wordmark" src={wordmarkUrl} alt="zAI" draggable={false}/>
+        ? <span/>
         : <button type="button" className="onboarding-back" disabled={working} onClick={() => setStep(back)}><UiIcon name="arrow"/>{t("返回")}</button>}
       <LangPicker/>
     </header>

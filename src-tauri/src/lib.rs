@@ -86,7 +86,8 @@ fn watch_login_callback(app: &tauri::App) {
 /// 按当前界面语言更新窗口标题、托盘提示和托盘菜单
 pub(crate) fn apply_native_language(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_title(ui_lang::app_name());
+        // 顶栏只保留图标，不显示文字标题
+        let _ = window.set_title("");
     }
     #[cfg(desktop)]
     {
@@ -159,7 +160,8 @@ pub fn run() {
             // 先定界面语言：保存过的选择优先，没有就跟随系统（认不出来用英文）
             ui_lang::init(&state::load().map(|s| s.ui_lang).unwrap_or_default());
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(ui_lang::app_name());
+                // 顶栏只保留图标，不显示文字标题
+                let _ = window.set_title("");
             }
             #[cfg(desktop)]
             watch_login_callback(app);

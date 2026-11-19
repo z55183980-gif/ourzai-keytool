@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "密钥管理工具",
+        "title": "",
         "width": 480,
-        "height": 680,
+        "height": 865,
         "center": true,
         "minWidth": 420,
         "minHeight": 600,

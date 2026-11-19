@@ -1,7 +1,6 @@
 /* 首次打开引导：占满窗口，不显示底部导航 */
 .onboarding { min-height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 18px 16px 28px; }
 .onboarding-top { width: min(100%, 460px); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.onboarding-wordmark { height: 22px; width: auto; user-select: none; }
 
 .onboarding-card { width: min(100%, 460px); margin: auto 0; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; text-align: center; padding: 32px 26px 22px; border-radius: 26px; background: var(--material-surface); box-shadow: var(--material-shadow); }
 
