@@ -32,8 +32,6 @@ pub enum Fix {
     Model,
     /// 去设置页
     Settings,
-    /// 把 Claude 桌面版从官方登录切到第三方推理并重启（switch_claude_desktop_to_third_party）
-    ThirdParty,
     None,
 }
 
@@ -176,7 +174,8 @@ pub fn check_claude(text: Option<&str>, anthropic_base: &str, service: Service) 
 /// Claude 桌面版的第三方推理配置（它不读 settings.json，规则单独一套）。
 /// `restart_pending`：配置里还是明文密钥且桌面版正在运行 —— 桌面版启动时会把明文加密，
 /// 还是明文就说明写入后它没重新打开过，运行中的那个还在用旧配置。
-/// `official_chosen`：用户在桌面版里选了 Claude.ai 官方登录，第三方推理配置不会被使用。
+/// `official_chosen`：用户在桌面版里选了 Claude.ai 官方登录。这是用户的选择、不算故障：
+/// 不报问题，用 API 启动时由启动流程弹窗确认切换。
 pub fn check_claude_desktop(
     text: Option<&str>,
     anthropic_base: &str,
@@ -205,10 +204,8 @@ pub fn check_claude_desktop(
             out.push(issue("D3", Level::Warn, "Claude 桌面版用了其他认证方式，可能不生效", Fix::Rewrite));
         }
     }
-    // 选了官方登录时重开也不会生效，D4 的「重新打开」提示没有意义
-    if official_chosen && c.provider.as_deref() == Some("gateway") {
-        out.push(issue("D6", Level::Warn, crate::claude_desktop::OFFICIAL_LOGIN_CHOSEN, Fix::ThirdParty));
-    } else if restart_pending {
+    // 选了官方登录时重开也不会用这份配置，D4 的「重新打开」提示没有意义
+    if restart_pending && !official_chosen {
         out.push(issue(
             "D4",
             Level::Warn,
@@ -481,8 +478,8 @@ mod tests {
         assert_eq!(ids(&check_claude_desktop(Some(&helper), CLAUDE_BASE, Service::Current, false, false)), ["D3"]);
         assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, true, false)), ["D4"]);
         assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, true, false).is_empty());
-        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, true, true)), ["D6"]);
-        assert_eq!(ids(&check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, false, true)), ["D6"]);
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Current, true, true).is_empty());
+        assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Zai, false, true).is_empty());
         assert!(check_claude_desktop(Some(&ok), CLAUDE_BASE, Service::Official, false, true).is_empty());
         let bedrock = desktop("bedrock", CLAUDE_BASE, "");
         assert!(check_claude_desktop(Some(&bedrock), CLAUDE_BASE, Service::Zai, false, true).is_empty());

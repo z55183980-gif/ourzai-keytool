@@ -2,5 +2,4 @@
 .restart-dialog { max-width: 400px; }
 .restart-dialog .modal-body p { margin: 0; line-height: 1.6; }
 .restart-dialog .restart-note { color: var(--dim); font-size: 13px; }
-.restart-dialog .restart-official { padding: 10px 12px; border-radius: 8px; background: rgba(217, 119, 6, 0.1); color: #92400e; font-size: 13px; }
 .restart-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 14px 14px; }

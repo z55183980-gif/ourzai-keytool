@@ -3,13 +3,13 @@ import { UiIcon } from "./UiIcon";
 import { t } from "./i18n";
 import * as api from "./api";
 import { installedKinds } from "./InstallStep";
-import type { ConfigurationStatus, Environment, HealthFix, HealthIssue, LaunchMode, LaunchTarget, LauncherScan, ToolId } from "./types";
+import type { ConfigurationStatus, Environment, HealthIssue, LaunchMode, LaunchTarget, LauncherScan, ToolId } from "./types";
 
 export type StageId = "install" | "version" | "config" | "health";
 type StageStatus = "pending" | "running" | "ok" | "warn" | "error";
 type Stage = { status: StageStatus; summary: string };
 /** 体检发现的问题 */
-export type GuideIssue = { tool: ToolId; level: "error" | "warn"; text: string; fix?: HealthFix };
+export type GuideIssue = { tool: ToolId; level: "error" | "warn"; text: string };
 
 const STAGES: StageId[] = ["install", "version", "config", "health"];
 const STAGE_LABEL: Record<StageId, string> = { install: "检测安装", version: "读取版本", config: "读取配置", health: "体检" };
@@ -115,7 +115,7 @@ export function useEnvCheck({ ignoreProxy, readEnvironment, checkHealth }: {
         return modes.map(mode => ({ tool, mode }));
       });
       // 体检本身会报环境变量覆盖，不再单独查
-      const results = await paced(Promise.all(checks.map(({ tool, mode }) => checkHealth(tool, "current", mode).then(list => list.map(issue => ({ tool, level: issue.level, text: t(issue.text), fix: issue.fix }))).catch(() => [] as GuideIssue[]))));
+      const results = await paced(Promise.all(checks.map(({ tool, mode }) => checkHealth(tool, "current", mode).then(list => list.map(issue => ({ tool, level: issue.level, text: t(issue.text) }))).catch(() => [] as GuideIssue[]))));
       const found: GuideIssue[] = [];
       for (const issue of results.flat()) if (!found.some(item => item.tool === issue.tool && item.text === issue.text)) found.push(issue);
       setIssues(found);

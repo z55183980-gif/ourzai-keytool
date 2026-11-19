@@ -173,6 +173,12 @@ pub struct SwitchOutcome {
     pub message: String,
 }
 
+/// 桌面版里是否记着用户选了 Claude.ai 官方登录（用 API 启动前要先切到第三方推理）
+#[tauri::command]
+pub async fn claude_desktop_official_login() -> bool {
+    tauri::async_runtime::spawn_blocking(crate::claude_desktop::official_login_chosen).await.unwrap_or(false)
+}
+
 /// 用户选了 Claude.ai 官方登录时，一键切到第三方推理：退出桌面版 → 备份并改选择 → 重新打开。
 /// 必须先退出：运行中的桌面版会回写这个文件，先改会被它覆盖。
 #[tauri::command]

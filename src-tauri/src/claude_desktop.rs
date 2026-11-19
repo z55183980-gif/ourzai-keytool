@@ -62,8 +62,6 @@ pub fn app_config_path() -> Result<PathBuf> {
 }
 
 pub const KEY_DEPLOYMENT_MODE: &str = "deploymentMode";
-pub const OFFICIAL_LOGIN_CHOSEN: &str =
-    "Claude 桌面版当前选的是 Claude.ai 官方登录，不会使用第三方推理配置：请在桌面版里切换到第三方推理后重新打开";
 
 /// 应用配置里是否记着用户选了官方登录（和桌面版一样，只认 "1p"，读不出来按没选）。
 /// 组织下发的策略可以强制第三方模式而忽略这个选择，本工具不读策略，按个人设备处理。

@@ -443,7 +443,6 @@ export function Launcher(props: {
       case "none": return null;
       case "keys": return { label: t("管理密钥"), run: () => props.onFix(tool, null, "keys", modeOf(tool)) };
       case "settings": return { label: t("去设置"), run: () => props.onFix(tool, null, "settings", modeOf(tool)) };
-      case "thirdparty": return { label: t("切换到第三方推理"), run: () => void props.onFix(tool, null, "thirdparty", modeOf(tool)) };
       case "model": {
         const sel = c.selected;
         return sel?.hasKey ? { label: t("换模型"), run: () => onToolPage(tool, () => openModel(tool, sel)) } : pickKey;

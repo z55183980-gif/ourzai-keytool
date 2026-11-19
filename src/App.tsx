@@ -9,6 +9,7 @@ import type {
   LaunchMode,
   ToolId,
   KeyStatus,
+  LaunchRequest,
   LaunchTarget,
   ModelInfo,
 } from "./types";
@@ -17,7 +18,7 @@ import { ClaudeIcon, CodexIcon } from "./BrandIcons";
 import type { ImportDialog } from "./ConnectionGuide";
 import { LoginPanel } from "./LoginPanel";
 import { WelcomeGuide } from "./WelcomeGuide";
-import { RestartDialog, SwitchModeDialog, mergePrompt, type RestartPrompt } from "./RestartDialog";
+import { ConfirmDialog, DESKTOP_NAME, RestartDialog, mergePrompt, type RestartPrompt } from "./RestartDialog";
 import type { ApplyKey, ApplyOutcome } from "./ConnectStep";
 import { ONBOARDED_KEY, needsOnboarding } from "./onboarding";
 import logoUrl from "./assets/logo.png";
@@ -199,24 +200,27 @@ export default function App() {
   /** 最近一条错误提示：引导页没有输出面板，写入失败时拿它告诉用户原因 */
   const lastError = useRef("");
   const setToast = useCallback((m: { kind: "ok" | "err"; text: string } | null) => { if (m) { const text = t(m.text.replace(/^Error:\s*/, "")); if (m.kind === "err") lastError.current = text; log(m.kind, text); } }, [log]);
-  /** 写入后的弹窗：运行中的桌面版要重启才读新配置；Claude 桌面版选了官方登录时说明不会生效 */
+  /** 写入后的弹窗：运行中的桌面版要重启才读新配置 */
   const [restartPrompt, setRestartPrompt] = useState<RestartPrompt | null>(null);
-  const promptRestart = useCallback(async (targets: LaunchTarget[], officialLogin = false) => {
-    // 选了官方登录时重启也不会用这份配置，Claude 桌面版不进重启列表，只说明原因
-    const wanted = officialLogin ? targets.filter(x => x !== "claude-desktop") : targets;
-    const running = wanted.length ? await api.runningDesktopClients(wanted).catch(() => [] as LaunchTarget[]) : [];
-    if (running.length || officialLogin) setRestartPrompt(prev => mergePrompt(prev, { targets: running, officialLogin }));
+  const promptRestart = useCallback(async (targets: LaunchTarget[]) => {
+    const running = targets.length ? await api.runningDesktopClients(targets).catch(() => [] as LaunchTarget[]) : [];
+    if (running.length) setRestartPrompt(prev => mergePrompt(prev, { targets: running }));
   }, []);
+  /** 通用确认弹窗：返回用户是否确认 */
+  type ConfirmAsk = { title: string; body: string; note?: string; confirmLabel: string; resolve: (ok: boolean) => void };
+  const [confirmAsk, setConfirmAsk] = useState<ConfirmAsk | null>(null);
+  const confirm = (ask: Omit<ConfirmAsk, "resolve">) => new Promise<boolean>(resolve => setConfirmAsk({ ...ask, resolve }));
   /** 写入配置的结果：写了哪些文件、备份号（可撤销）、警告 */
   const logResult = (r: ApplyResult) => {
     log("ok", t("配置已写入，改动前已备份（{id}）", { id: r.backupId }), { group: "undo", batch: nextBatch(), actions: [{ label: t("撤销这次改动"), run: () => void restore(r.backupId) }] });
     r.paths.forEach(path => log("path", path));
     r.warnings.forEach(w => log("warn", t(w)));
+    // Claude 桌面版选了官方登录时重启也还是官方登录，留到用 API 启动时再确认切换
     const targets: LaunchTarget[] = [
-      ...(r.wroteClaudeDesktop ? ["claude-desktop" as const] : []),
+      ...(r.wroteClaudeDesktop && !r.officialLoginChosen ? ["claude-desktop" as const] : []),
       ...(r.wroteCodexConfig || r.wroteCodexAuth ? ["codex-desktop" as const] : []),
     ];
-    void promptRestart(targets, !!r.wroteClaudeDesktop && !!r.officialLoginChosen);
+    void promptRestart(targets);
   };
 
   const codexKeepsAuth = env?.codex.authState === "OfficialLogin" || env?.codex.authState === "ExternalStore";
@@ -454,6 +458,40 @@ export default function App() {
     }
   };
 
+  /**
+   * 打开桌面版（配置已核对过）。桌面版只在启动时读配置：
+   * 用 API 启动而 Claude 桌面版选了官方登录 → 确认后切到第三方推理并重新打开；
+   * 已在运行 → 确认后重启（否则只会激活旧窗口，看起来没反应）；都不是就直接打开。
+   */
+  const launchDesktop = async (tool: ToolId, service: string, req: LaunchRequest): Promise<{ message: string }> => {
+    const name = t(DESKTOP_NAME[req.target] ?? req.target);
+    const usesApi = tool === "claude" && service !== "official" && (service !== "current" || !!env?.claudeDesktop?.currentBaseUrl);
+    if (usesApi && await api.claudeDesktopOfficialLogin().catch(() => false)) {
+      const ok = await confirm({
+        title: t("用 API 启动 Claude 桌面版"),
+        body: t("Claude 桌面版当前使用 Claude.ai 官方账号登录。用 API 启动需要切换到第三方推理，会关闭并重新打开 Claude 桌面版。"),
+        note: t("进行中的对话或任务会被中断。你的 Claude.ai 账号不受影响，之后可在桌面版里切回官方登录；这次改动也可以撤销。"),
+        confirmLabel: t("切换并启动"),
+      });
+      if (!ok) return { message: t("已取消启动") };
+      const r = await api.switchClaudeDesktopToThirdParty();
+      const backupId = r.backupId;
+      if (backupId) log("ok", t("已把 Claude 桌面版切换到第三方推理（{id}）", { id: backupId }), { group: "undo", batch: nextBatch(), actions: [{ label: t("撤销这次改动"), run: () => void restore(backupId) }] });
+      return { message: t(r.message) };
+    }
+    if ((await api.runningDesktopClients([req.target]).catch(() => [] as LaunchTarget[])).length) {
+      const ok = await confirm({
+        title: t("{name} 正在运行", { name }),
+        body: t("运行中的 {name} 不会重新读取配置。要按当前选择的服务启动，需要关闭并重新打开它。", { name }),
+        note: t("重启会关闭它的所有窗口和后台进程，进行中的对话或任务会被中断。"),
+        confirmLabel: t("重启"),
+      });
+      if (!ok) return { message: t("已取消启动") };
+      return api.restartDesktopClient(req.target);
+    }
+    return api.launchClient(req);
+  };
+
   /** fresh：刚保存过的密钥（如换模型后），避免用到本次渲染里还没更新的 profiles */
   const runClientAction = async (tool: ToolId, mode: LaunchMode, service: string, directory: string, action: "save" | "launch", fresh?: Profile): Promise<boolean> => {
     if (launchLock.current || busy) return false;
@@ -483,7 +521,8 @@ export default function App() {
         // 真的改了配置才给撤销：提示条上倒计时 5 秒，期间可以一键还原到写入前
         log("ok", t("配置已保存并写入，可以启动客户端"), backupId ? { undo: () => void restore(backupId) } : undefined);
       } else {
-        const receipt = await launchWithConfiguration(tool, mode, service, directory, request, api);
+        const receipt = await launchWithConfiguration(tool, mode, service, directory, request,
+          mode === "desktop" ? { ...api, launchClient: req => launchDesktop(tool, service, req) } : api);
         setToast({ kind: "ok", text: receipt.message });
       }
       return true;
@@ -536,25 +575,7 @@ export default function App() {
     return api.aiDiagnose({ tool, mode, service, model, profileId, note, lang: getLang(), baseUrl: baseUrl || remote?.base_url || BRAND.apiBaseUrl, ignoreProxy, opusModel: aliasOpus, sonnetModel: aliasSonnet, haikuModel: aliasHaiku });
   };
   /** 体检 / AI 修复的动作。写入了配置时返回备份号（可撤销），其余（跳转页面、没写入）返回 null */
-  /** Claude 桌面版选了官方登录：弹窗确认后切到第三方推理并重启；返回是否切换成功 */
-  const [switchAsk, setSwitchAsk] = useState<{ resolve: (done: boolean) => void } | null>(null);
-  const switchThirdParty = () => new Promise<boolean>(resolve => setSwitchAsk({ resolve }));
-  const runSwitch = async (): Promise<boolean> => {
-    log("cmd", t("切换到第三方推理") + " · Claude " + t("桌面版"));
-    try {
-      const r = await api.switchClaudeDesktopToThirdParty();
-      const backupId = r.backupId;
-      log("ok", t(r.message), backupId ? { group: "undo", batch: nextBatch(), actions: [{ label: t("撤销这次改动"), run: () => void restore(backupId) }] } : undefined);
-      return true;
-    } catch (e) {
-      setToast({ kind: "err", text: String(e) });
-      return false;
-    } finally {
-      await reload(baseUrl);
-    }
-  };
-  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings" | "thirdparty", mode: LaunchMode = "cli"): Promise<string | null> => {
-    if (fix === "thirdparty") { await switchThirdParty(); return null; }
+  const fixHealth = async (tool: ToolId, profileId: string | null, fix: "rewrite" | "rebuild" | "keys" | "settings", mode: LaunchMode = "cli"): Promise<string | null> => {
     if (fix === "rebuild" && tool === "claude" && mode === "desktop") {
       setToast({ kind: "err", text: t("桌面版不支持备份重建，请手动修复配置") });
       return null;
@@ -711,12 +732,14 @@ export default function App() {
   };
   const restartDialog = <>
     {restartPrompt && <RestartDialog prompt={restartPrompt} onClose={() => setRestartPrompt(null)} log={(kind, text) => setToast({ kind: kind === "info" ? "ok" : kind, text })} />}
-    {switchAsk && <SwitchModeDialog onCancel={() => { switchAsk.resolve(false); setSwitchAsk(null); }}
-      onConfirm={async () => { const done = await runSwitch(); switchAsk.resolve(done); setSwitchAsk(null); }} />}
+    {confirmAsk && <ConfirmDialog title={confirmAsk.title} body={confirmAsk.body} note={confirmAsk.note}
+      cancelLabel={t("取消")} confirmLabel={confirmAsk.confirmLabel} workingLabel={confirmAsk.confirmLabel}
+      onCancel={() => { confirmAsk.resolve(false); setConfirmAsk(null); }}
+      onConfirm={async () => { confirmAsk.resolve(true); setConfirmAsk(null); }} />}
   </>;
   if (onboarding) return <>
     <WelcomeGuide onFinish={tools => { finishOnboarding(); setPage(tools[0]); }} onSkip={finishOnboarding}
-      connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth, switchThirdParty }} />
+      connect={{ profiles, defaultUrl: defaultServiceUrl, ignoreProxy, renderImport: loginPanel, applyKey: applyGuideKey, readEnvironment: () => readConfig(["claude", "codex"]), checkHealth }} />
     {restartDialog}
   </>;
 

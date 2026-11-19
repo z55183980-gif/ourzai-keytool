@@ -196,6 +196,7 @@ pub fn run() {
             client_restart::running_desktop_clients,
             client_restart::restart_desktop_client,
             client_restart::switch_claude_desktop_to_third_party,
+            client_restart::claude_desktop_official_login,
             launcher::validate_project_directory,
             tray_menu::take_tray_action,
             client_setup::client_install_guide,
