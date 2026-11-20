@@ -143,6 +143,7 @@ export interface RemoteConfig {
   claude_opus_model: string;
   claude_sonnet_model: string;
   claude_haiku_model: string;
+  claude_desktop_extra_models: string[];
   min_client_version: string;
   notice: string;
   write_mode: string;

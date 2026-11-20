@@ -867,6 +867,7 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
             opus_model: req.claude_opus_model.clone(),
             sonnet_model: req.claude_sonnet_model.clone(),
             haiku_model: req.claude_haiku_model.clone(),
+            gateway_model_discovery: !profile.is_custom(),
         };
         let merged = claude_config::merge(existing.as_deref(), &settings)?;
         txn.stage_text(&claude_path, existing.as_deref(), Some(&merged));
@@ -878,12 +879,17 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     // 写入后桌面版会把明文密钥加密；记下这次写入的条目，之后才能认出那段密文
     let mut desktop_written: Option<(String, claude_desktop::Current)> = None;
     if let Some((path, meta_before, new_meta, existing)) = existing_desktop {
-        let models = claude_desktop::model_list(&[
-            &req.claude_model,
-            &req.claude_opus_model,
-            &req.claude_sonnet_model,
-            &req.claude_haiku_model,
-        ]);
+        // 先放用户选的默认模型和别名模型（第一个是桌面版的默认），再补网关上其余的 Claude 模型；
+        // 其他服务的密钥不补，那边没有这些模型
+        let extra = if profile.is_custom() {
+            Vec::new()
+        } else {
+            crate::updates::configuration()?.claude_desktop_extra_models
+        };
+        let models = claude_desktop::model_list_with(
+            &[&req.claude_model, &req.claude_opus_model, &req.claude_sonnet_model, &req.claude_haiku_model],
+            &extra,
+        );
         let merged = claude_desktop::merge(existing.as_deref(), &anthropic_base, &api_key, &models)?;
         desktop_written = claude_desktop::current(&merged).map(|current| (path.to_string_lossy().to_string(), current));
         if existing.as_deref() != Some(merged.as_str()) {
@@ -1106,6 +1112,7 @@ fn repair_claude_env_blocking(req: ApplyRequest) -> Result<ApplyResult> {
         opus_model: req.claude_opus_model,
         sonnet_model: req.claude_sonnet_model,
         haiku_model: req.claude_haiku_model,
+        gateway_model_discovery: !profile.is_custom(),
     };
     let merged = claude_config::merge(Some(&repaired), &settings)?;
     let mut txn = TwoFileTxn::new();
