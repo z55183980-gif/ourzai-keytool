@@ -648,6 +648,10 @@ pub struct ApplyRequest {
     // —— Claude 桌面版（第三方推理配置，和 CLI 的 settings.json 是两份）——
     #[serde(default)]
     pub configure_claude_desktop: bool,
+    /// 桌面版模型菜单补上的网关模型，由前端随请求带来，写后核对用的也是这一份。
+    /// 老前端不带时按远程配置（其他服务的密钥一律不补）
+    #[serde(default)]
+    pub claude_desktop_extra_models: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -881,10 +885,10 @@ pub fn apply_config_blocking(req: ApplyRequest) -> Result<ApplyResult> {
     if let Some((path, meta_before, new_meta, existing)) = existing_desktop {
         // 先放用户选的默认模型和别名模型（第一个是桌面版的默认），再补网关上其余的 Claude 模型；
         // 其他服务的密钥不补，那边没有这些模型
-        let extra = if profile.is_custom() {
-            Vec::new()
-        } else {
-            crate::updates::configuration()?.claude_desktop_extra_models
+        let extra = match (&req.claude_desktop_extra_models, profile.is_custom()) {
+            (_, true) => Vec::new(),
+            (Some(list), false) => list.clone(),
+            (None, false) => crate::updates::configuration()?.claude_desktop_extra_models,
         };
         let models = claude_desktop::model_list_with(
             &[&req.claude_model, &req.claude_opus_model, &req.claude_sonnet_model, &req.claude_haiku_model],
@@ -1273,6 +1277,7 @@ pub async fn run_health(req: &HealthRequest, cache: &HealthCache) -> Result<Vec<
                             service,
                             restart_pending,
                             claude_desktop::official_login_chosen(),
+                            &crate::updates::configuration()?.claude_desktop_extra_models,
                         ),
                         health::current_claude_desktop(text.as_deref(), &anthropic_base, |sealed, current| {
                             let config = path.to_string_lossy();
