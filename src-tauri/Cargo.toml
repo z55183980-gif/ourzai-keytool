@@ -1,6 +1,6 @@
 [package]
 name = "dbkey"
-version = "0.2.10"
+version = "0.2.11"
 description = "zAI Claude / Codex 密钥管理"
 authors = ["zAI"]
 edition = "2021"
